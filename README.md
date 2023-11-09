@@ -5,6 +5,10 @@ The same key keeps the callbacks called sequentially, and different keys can be 
 需要以高并发顺序处理某些事情，解决头部阻塞问题。<br>
 相同的键保持回调顺序处理，不同的键可以同时调用。<br>
 
+## Install
+```
+go get github.com/1xxz188/parallelorder@v1.0.0
+```
 ## Demo
 ```
 package main
