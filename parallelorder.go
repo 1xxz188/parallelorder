@@ -87,7 +87,6 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 		return nil, errors.New("init opt.fn == nil")
 	}
 
-	cmap.SHARD_COUNT = 256
 	po := &ParallelOrder[TData]{
 		readyChan:   make(chan *node[TData], opt.nodeNum),
 		nodeMap:     cmap.New[*node[TData]](), //<ID, *node>

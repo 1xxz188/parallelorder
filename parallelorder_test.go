@@ -28,8 +28,6 @@ func TestDemo(t *testing.T) {
 
 func TestMultiPushMsg(t *testing.T) {
 	//var r = rand.New(rand.NewSource(time.Now().Unix()))
-	cmap.SHARD_COUNT = 256
-
 	msgCnt := 1024 * 2
 	sendGoCnt := 1000
 	testMap := cmap.New[int]()
