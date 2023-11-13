@@ -97,3 +97,23 @@ func TestMultiPushMsg(t *testing.T) {
 	t.Logf("revCnt[%d] cost[%s]\n", revCnt, time.Since(beginTm).String())
 	require.Equal(t, revCnt, sendCnt)
 }
+
+func TestStop(t *testing.T) {
+	var cnt int
+	handle := func(key string, data int) {
+		cnt++
+	}
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+	sendGoCnt := 1000
+	for i := 0; i < sendGoCnt; i++ {
+		err = entity.Push("key", i+1)
+		if err != nil {
+			panic(err)
+		}
+	}
+	entity.Stop()
+	require.Equal(t, 1000, cnt)
+	err = entity.Push("key", 100)
+	require.Equal(t, ErrWasExited, err)
+}

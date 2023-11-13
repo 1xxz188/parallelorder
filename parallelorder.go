@@ -7,6 +7,12 @@ import (
 	"sync"
 )
 
+var (
+	ErrPutFail        = errors.New("put key fail maybe queue is full")
+	ErrWasExited      = errors.New("ParallelOrder was exited")
+	ErrPushNotFindKey = errors.New("push not find key")
+)
+
 type Handle[TData any] func(key string, data TData)
 
 type Options[TData any] struct {
@@ -51,8 +57,8 @@ type node[TData any] struct {
 
 	rwLock        sync.RWMutex
 	isInReadyChan bool
-
-	msgQueue *queue.EsQueue[TData]
+	exit          bool //退出包
+	msgQueue      *queue.EsQueue[TData]
 }
 
 type ParallelOrder[TData any] struct {
@@ -63,6 +69,8 @@ type ParallelOrder[TData any] struct {
 	workNum     uint32
 	oneCallCnt  uint32
 	msgCapacity uint32
+	workGp      sync.WaitGroup
+	exit        bool
 }
 
 func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
@@ -80,7 +88,7 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 	}
 
 	cmap.SHARD_COUNT = 256
-	instance := &ParallelOrder[TData]{
+	po := &ParallelOrder[TData]{
 		readyChan:   make(chan *node[TData], opt.nodeNum),
 		nodeMap:     cmap.New[*node[TData]](), //<ID, *node>
 		fn:          opt.fn,
@@ -89,20 +97,25 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 		oneCallCnt:  opt.oneCallCnt,
 		msgCapacity: opt.msgCapacity,
 	}
-
-	for i := uint32(0); i < instance.workNum; i++ {
+	po.workGp.Add(int(po.workNum))
+	for i := uint32(0); i < po.workNum; i++ {
 		go func() {
-			for item := range instance.readyChan {
+			defer po.workGp.Done()
+
+			for item := range po.readyChan {
+				if item.exit {
+					break
+				}
 				//only one coroutine call the unique ID at the same time
 				var quantity uint32
 				var ok bool
 				var msg TData
-				for i := uint32(0); i < instance.oneCallCnt; i++ {
+				for i := uint32(0); i < po.oneCallCnt; i++ {
 					msg, ok, quantity = item.msgQueue.Get()
 					if !ok {
 						break
 					}
-					instance.fn(item.key, msg)
+					po.fn(item.key, msg)
 					if quantity <= 0 {
 						break
 					}
@@ -110,21 +123,25 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 				if quantity <= 0 { //maybe still have value
 					item.rwLock.Lock()
 					if item.msgQueue.Quantity() > 0 {
-						instance.readyChan <- item
+						po.readyChan <- item
 					} else {
 						item.isInReadyChan = false
 					}
 					item.rwLock.Unlock()
-				} else { //have value, so push again
-					instance.readyChan <- item
+				} else { //still have value, so push again
+					po.readyChan <- item
 				}
 			}
 		}()
 	}
-	return instance, nil
+	return po, nil
 }
 
 func (po *ParallelOrder[TData]) Push(key string, data TData) error {
+	if po.exit {
+		return ErrWasExited
+	}
+
 	var item *node[TData]
 	item, ok := po.nodeMap.Get(key)
 	if !ok {
@@ -135,7 +152,7 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 		if ok := po.nodeMap.SetIfAbsent(key, item); !ok {
 			item, ok = po.nodeMap.Get(key)
 			if !ok {
-				return errors.New("push not find key")
+				return ErrPushNotFindKey
 			}
 		}
 	}
@@ -145,7 +162,7 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 
 	ok, _ = item.msgQueue.Put(data)
 	if !ok {
-		return errors.New("put key fail maybe queue is full")
+		return ErrPutFail
 	}
 	if item.isInReadyChan {
 		return nil
@@ -153,4 +170,44 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 	item.isInReadyChan = true
 	po.readyChan <- item
 	return nil
+}
+
+func (po *ParallelOrder[TData]) Stop() {
+	if po.exit {
+		return
+	}
+
+	po.exit = true //不建议加锁，因为需要避免嵌套调用引起死锁 (po.fn里调用po.Push情况)
+	//抛入退出事件
+	var item node[TData]
+	item.exit = true
+	for i := uint32(0); i < po.workNum; i++ {
+		po.readyChan <- &item
+	}
+	po.workGp.Wait()
+
+	//最后排空处理
+	for {
+		select {
+		case item, ok := <-po.readyChan:
+			if !ok {
+				break
+			}
+			var quantity uint32
+			var msg TData
+			for {
+				msg, ok, quantity = item.msgQueue.Get()
+				if !ok {
+					break
+				}
+				po.fn(item.key, msg)
+				if quantity <= 0 {
+					break
+				}
+			}
+		default:
+			goto END
+		}
+	}
+END:
 }

@@ -19,11 +19,8 @@ import (
 )
 
 func main() {
-	exitChan := make(chan struct{})
-
 	fn := func(key string, data string) {
 		fmt.Println(key, data)
-		close(exitChan)
 	}
 
 	entity, err := parallelorder.New[string](parallelorder.DefaultOptions(fn))
@@ -35,6 +32,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	<-exitChan
+	entity.Stop()
 }
 ```
+## 注意事项
+Push和Stop建议遵循谁产生谁关闭原则，即调用接口为同一协程，避免排空消息出现残留。
