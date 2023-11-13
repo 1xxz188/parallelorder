@@ -7,7 +7,7 @@ The same key keeps the callbacks called sequentially, and different keys can be 
 
 ## Install
 ```
-go get github.com/1xxz188/parallelorder@v1.0.0
+go get github.com/1xxz188/parallelorder@v1.1.0
 ```
 ## Demo
 ```
