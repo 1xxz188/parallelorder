@@ -2,13 +2,14 @@ package parallelorder
 
 import (
 	"fmt"
-	cmap "github.com/orcaman/concurrent-map/v2"
-	"github.com/stretchr/testify/require"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	cmap "github.com/orcaman/concurrent-map/v2"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDemo(t *testing.T) {
@@ -114,4 +115,359 @@ func TestStop(t *testing.T) {
 	require.Equal(t, 1000, cnt)
 	err = entity.Push("key", 100)
 	require.Equal(t, ErrWasExited, err)
+}
+
+// TestRemove 测试删除 key 功能
+func TestRemove(t *testing.T) {
+	var processedCount int32
+	handle := func(key string, data int) {
+		atomic.AddInt32(&processedCount, 1)
+		time.Sleep(time.Millisecond * 10) // 模拟处理耗时
+	}
+
+	entity, err := New[int](DefaultOptions(handle).WithWorkNum(4))
+	require.NoError(t, err)
+
+	// 推送一些消息
+	for i := 0; i < 100; i++ {
+		err = entity.Push("key1", i)
+		require.NoError(t, err)
+	}
+
+	// 等待一小段时间让部分消息开始处理
+	time.Sleep(time.Millisecond * 50)
+
+	// 删除 key
+	removed := entity.Remove("key1")
+	require.True(t, removed)
+
+	// 再次删除应该返回 false
+	removed = entity.Remove("key1")
+	require.False(t, removed)
+
+	// 删除不存在的 key 应该返回 false
+	removed = entity.Remove("non_existent_key")
+	require.False(t, removed)
+
+	// 删除后 Push 应该创建新节点
+	err = entity.Push("key1", 999)
+	require.NoError(t, err)
+
+	entity.Stop()
+
+	// 处理的消息数应该少于 100（因为中途删除了）
+	t.Logf("Processed count: %d", processedCount)
+}
+
+// TestHas 测试检查 key 是否存在
+func TestHas(t *testing.T) {
+	handle := func(key string, data int) {}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// 初始状态没有 key
+	require.False(t, entity.Has("key1"))
+
+	// Push 后应该存在
+	err = entity.Push("key1", 1)
+	require.NoError(t, err)
+	require.True(t, entity.Has("key1"))
+
+	// 删除后应该不存在
+	entity.Remove("key1")
+	require.False(t, entity.Has("key1"))
+
+	entity.Stop()
+}
+
+// TestKeys 测试获取所有 key
+func TestKeys(t *testing.T) {
+	handle := func(key string, data int) {}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// 初始状态没有 key
+	require.Empty(t, entity.Keys())
+
+	// 添加多个 key
+	entity.Push("key1", 1)
+	entity.Push("key2", 2)
+	entity.Push("key3", 3)
+
+	keys := entity.Keys()
+	require.Len(t, keys, 3)
+	require.Contains(t, keys, "key1")
+	require.Contains(t, keys, "key2")
+	require.Contains(t, keys, "key3")
+
+	// 删除一个 key
+	entity.Remove("key2")
+	keys = entity.Keys()
+	require.Len(t, keys, 2)
+	require.NotContains(t, keys, "key2")
+
+	entity.Stop()
+}
+
+// TestCount 测试获取 key 数量
+func TestCount(t *testing.T) {
+	handle := func(key string, data int) {}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	require.Equal(t, 0, entity.Count())
+
+	entity.Push("key1", 1)
+	require.Equal(t, 1, entity.Count())
+
+	entity.Push("key2", 2)
+	require.Equal(t, 2, entity.Count())
+
+	// 同一个 key 多次 Push 不增加数量
+	entity.Push("key1", 3)
+	require.Equal(t, 2, entity.Count())
+
+	entity.Stop()
+}
+
+// TestConcurrentRemove 测试并发删除
+func TestConcurrentRemove(t *testing.T) {
+	var processedCount int32
+	handle := func(key string, data int) {
+		atomic.AddInt32(&processedCount, 1)
+	}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// 创建多个 key
+	keyCount := 100
+	for i := 0; i < keyCount; i++ {
+		key := fmt.Sprintf("key%d", i)
+		entity.Push(key, i)
+	}
+
+	// 并发删除
+	var wg sync.WaitGroup
+	for i := 0; i < keyCount; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key%d", idx)
+			entity.Remove(key)
+		}(i)
+	}
+	wg.Wait()
+
+	entity.Stop()
+	t.Logf("Processed count after concurrent remove: %d", processedCount)
+}
+
+// TestRemoveAndPush 测试删除后重新 Push
+func TestRemoveAndPush(t *testing.T) {
+	var messages []string
+	var mu sync.Mutex
+
+	handle := func(key string, data string) {
+		mu.Lock()
+		messages = append(messages, data)
+		mu.Unlock()
+	}
+
+	entity, err := New[string](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// 第一轮 Push
+	entity.Push("player1", "msg1")
+	entity.Push("player1", "msg2")
+	time.Sleep(time.Millisecond * 50)
+
+	// 删除
+	entity.Remove("player1")
+
+	// 第二轮 Push（应该创建新节点）
+	entity.Push("player1", "msg3")
+	entity.Push("player1", "msg4")
+
+	entity.Stop()
+
+	mu.Lock()
+	t.Logf("Messages: %v", messages)
+	// msg3 和 msg4 应该都被处理
+	require.Contains(t, messages, "msg3")
+	require.Contains(t, messages, "msg4")
+	mu.Unlock()
+}
+
+// TestOptions 测试配置选项
+func TestOptions(t *testing.T) {
+	handle := func(key string, data int) {}
+
+	// 测试默认配置
+	opt := DefaultOptions(handle)
+	entity, err := New[int](opt)
+	require.NoError(t, err)
+	entity.Stop()
+
+	// 测试自定义配置
+	opt = DefaultOptions(handle).
+		WithNodeNum(100).
+		WithWorkNum(8).
+		WithMsgCapacity(512).
+		WithOneCallCnt(5)
+
+	entity, err = New[int](opt)
+	require.NoError(t, err)
+	entity.Stop()
+}
+
+// TestInvalidOptions 测试无效配置
+func TestInvalidOptions(t *testing.T) {
+	handle := func(key string, data int) {}
+
+	// nodeNum <= 0
+	opt := DefaultOptions(handle).WithNodeNum(0)
+	_, err := New[int](opt)
+	require.Error(t, err)
+
+	// workNum <= 0
+	opt = DefaultOptions(handle).WithWorkNum(0)
+	_, err = New[int](opt)
+	require.Error(t, err)
+
+	// oneCallCnt <= 0
+	opt = DefaultOptions(handle).WithOneCallCnt(0)
+	_, err = New[int](opt)
+	require.Error(t, err)
+
+	// fn == nil
+	opt = DefaultOptions[int](nil)
+	_, err = New[int](opt)
+	require.Error(t, err)
+}
+
+// TestQueueFull 测试队列满的情况
+func TestQueueFull(t *testing.T) {
+	// 使用一个阻塞的 handler
+	blockChan := make(chan struct{})
+	handle := func(key string, data int) {
+		<-blockChan // 阻塞直到关闭
+	}
+
+	// 使用很小的队列容量
+	opt := DefaultOptions(handle).WithMsgCapacity(10)
+	entity, err := New[int](opt)
+	require.NoError(t, err)
+
+	// 快速填满队列
+	var errCount int32
+	for i := 0; i < 100; i++ {
+		err := entity.Push("key1", i)
+		if err == ErrPutFail {
+			atomic.AddInt32(&errCount, 1)
+		}
+	}
+
+	// 应该有一些消息因为队列满而失败
+	t.Logf("Queue full errors: %d", errCount)
+
+	close(blockChan)
+	entity.Stop()
+}
+
+// TestConcurrentStop 测试并发调用 Stop
+func TestConcurrentStop(t *testing.T) {
+	var cnt int32
+	handle := func(key string, data int) {
+		atomic.AddInt32(&cnt, 1)
+	}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// Push 一些消息
+	for i := 0; i < 100; i++ {
+		entity.Push("key", i)
+	}
+
+	// 并发调用 Stop（应该只有一个生效）
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			entity.Stop()
+		}()
+	}
+	wg.Wait()
+
+	// 所有消息都应该被处理
+	require.Equal(t, int32(100), cnt)
+}
+
+// TestPushAfterRemove 测试删除后立即 Push 的并发情况
+func TestPushAfterRemove(t *testing.T) {
+	var processedCount int32
+	handle := func(key string, data int) {
+		atomic.AddInt32(&processedCount, 1)
+	}
+
+	entity, err := New[int](DefaultOptions(handle))
+	require.NoError(t, err)
+
+	// 先创建 key
+	entity.Push("key1", 1)
+	time.Sleep(time.Millisecond * 10)
+
+	// 并发执行 Remove 和 Push
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			entity.Remove("key1")
+		}()
+		go func(val int) {
+			defer wg.Done()
+			entity.Push("key1", val)
+		}(i)
+	}
+	wg.Wait()
+
+	entity.Stop()
+	t.Logf("Processed after concurrent remove/push: %d", processedCount)
+}
+
+// TestOrderGuarantee 测试顺序保证
+func TestOrderGuarantee(t *testing.T) {
+	var results []int
+	var mu sync.Mutex
+
+	handle := func(key string, data int) {
+		mu.Lock()
+		results = append(results, data)
+		mu.Unlock()
+	}
+
+	opt := DefaultOptions(handle).WithWorkNum(16)
+	entity, err := New[int](opt)
+	require.NoError(t, err)
+
+	// 向同一个 key 按顺序 Push
+	msgCount := 1000
+	for i := 0; i < msgCount; i++ {
+		err = entity.Push("single_key", i)
+		require.NoError(t, err)
+	}
+
+	entity.Stop()
+
+	// 验证结果顺序
+	require.Len(t, results, msgCount)
+	for i := 0; i < msgCount; i++ {
+		require.Equal(t, i, results[i], "Message order should be preserved")
+	}
 }
