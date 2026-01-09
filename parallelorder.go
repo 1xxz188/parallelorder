@@ -2,9 +2,11 @@ package parallelorder
 
 import (
 	"errors"
+	"sync"
+	"sync/atomic"
+
 	"github.com/1xxz188/go-queue"
 	cmap "github.com/orcaman/concurrent-map/v2"
-	"sync"
 )
 
 var (
@@ -70,7 +72,8 @@ type ParallelOrder[TData any] struct {
 	oneCallCnt  uint32
 	msgCapacity uint32
 	workGp      sync.WaitGroup
-	exit        bool
+	pushWg      sync.WaitGroup // 追踪正在进行的 Push 操作
+	exit        atomic.Bool    // 使用 atomic.Bool 避免数据竞争
 }
 
 func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
@@ -137,7 +140,15 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 }
 
 func (po *ParallelOrder[TData]) Push(key string, data TData) error {
-	if po.exit {
+	if po.exit.Load() {
+		return ErrWasExited
+	}
+
+	po.pushWg.Add(1)
+	defer po.pushWg.Done()
+
+	// 再次检查，避免在 Add 之前 Stop 已经开始
+	if po.exit.Load() {
 		return ErrWasExited
 	}
 
@@ -172,12 +183,15 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 }
 
 func (po *ParallelOrder[TData]) Stop() {
-	if po.exit {
+	// 使用 CompareAndSwap 保证只有一个 goroutine 能执行 Stop 逻辑
+	if !po.exit.CompareAndSwap(false, true) {
 		return
 	}
 
-	po.exit = true //不建议加锁，因为需要避免嵌套调用引起死锁 (po.fn里调用po.Push情况)
-	//抛入退出事件
+	// 等待所有正在进行的 Push 操作完成
+	po.pushWg.Wait()
+
+	// 抛入退出事件
 	var item node[TData]
 	item.exit = true
 	for i := uint32(0); i < po.workNum; i++ {
@@ -185,12 +199,16 @@ func (po *ParallelOrder[TData]) Stop() {
 	}
 	po.workGp.Wait()
 
-	//最后排空处理
+	// 最后排空处理
 	for {
 		select {
 		case item, ok := <-po.readyChan:
 			if !ok {
-				break
+				goto END // 修复: 使用 goto 跳出循环
+			}
+			// 修复: 跳过 exit 节点，避免 nil pointer panic
+			if item.exit {
+				continue
 			}
 			var quantity uint32
 			var msg TData
