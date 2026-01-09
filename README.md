@@ -11,7 +11,7 @@ High-performance parallel ordered message processor with head-of-line blocking s
 - **Thread-Safe / 线程安全**: All operations are goroutine-safe / 所有操作都是协程安全的
 - **Graceful Shutdown / 优雅关闭**: Stop() waits for all messages to be processed / Stop() 会等待所有消息处理完成
 - **Dynamic Key Management / 动态 Key 管理**: Support adding and removing keys at runtime / 支持运行时添加和删除 key
-- **Generic Support / 泛型支持**: Works with any data type / 支持任意数据类型
+- **Generic Support / 泛型支持**: Works with any comparable key type and any data type / 支持任意可比较的 key 类型和任意数据类型
 
 ## Install / 安装
 
@@ -20,6 +20,8 @@ go get github.com/1xxz188/parallelorder@latest
 ```
 
 ## Quick Start / 快速开始
+
+### String Key (Recommended for most cases / 大多数场景推荐)
 
 ```go
 package main
@@ -35,8 +37,9 @@ func main() {
         fmt.Println(key, data)
     }
 
-    // Create instance with default options / 使用默认配置创建实例
-    entity, err := parallelorder.New(parallelorder.DefaultOptions(fn))
+    // Use DefaultOptionsString for string keys (built-in FNV-1a hash)
+    // 使用 DefaultOptionsString 处理 string 类型 key（内置 FNV-1a 哈希）
+    entity, err := parallelorder.New(parallelorder.DefaultOptionsString(fn))
     if err != nil {
         panic(err)
     }
@@ -51,14 +54,50 @@ func main() {
 }
 ```
 
+### Custom Key Type / 自定义 Key 类型
+
+```go
+package main
+
+import (
+    "fmt"
+    "github.com/1xxz188/parallelorder"
+)
+
+func main() {
+    // Handler with int64 key / 使用 int64 作为 key 的处理函数
+    fn := func(userID int64, data string) {
+        fmt.Printf("User %d: %s\n", userID, data)
+    }
+
+    // Custom sharding function for int64 keys / int64 key 的自定义分片函数
+    sharding := func(key int64) uint32 {
+        return uint32(key)
+    }
+
+    entity, err := parallelorder.New(parallelorder.DefaultOptions(fn, sharding))
+    if err != nil {
+        panic(err)
+    }
+
+    entity.Push(int64(1001), "login")
+    entity.Push(int64(1002), "login")
+
+    entity.Stop()
+}
+```
+
 ## Configuration / 配置选项
 
 ```go
-// Default options / 默认配置
-opt := parallelorder.DefaultOptions(fn)
+// Default options for string keys / string 类型 key 的默认配置
+opt := parallelorder.DefaultOptionsString(fn)
+
+// Default options with custom key type and sharding / 自定义 key 类型和分片函数的默认配置
+opt := parallelorder.DefaultOptions(fn, sharding)
 
 // Customize with builder pattern / 使用构建器模式自定义配置
-opt = parallelorder.DefaultOptions(fn).
+opt = parallelorder.DefaultOptionsString(fn).
     WithNodeNum(10240).      // Max concurrent keys / 最大并发 key 数量 (default: 10240)
     WithWorkNum(128).        // Worker goroutine count / 工作协程数量 (default: 128)
     WithMsgCapacity(8192).   // Message queue capacity per key / 每个 key 的消息队列容量 (default: 8192)
@@ -76,10 +115,40 @@ entity, err := parallelorder.New(opt)
 
 ## API Reference / API 参考
 
+### New
+
+```go
+func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[TKey, TData], error)
+```
+
+Create a new ParallelOrder instance.
+
+创建一个新的 ParallelOrder 实例。
+
+### DefaultOptions
+
+```go
+func DefaultOptions[TKey comparable, TData any](fn Handle[TKey, TData], sharding func(key TKey) uint32) Options[TKey, TData]
+```
+
+Create default options with custom key type and sharding function.
+
+使用自定义 key 类型和分片函数创建默认配置。
+
+### DefaultOptionsString
+
+```go
+func DefaultOptionsString[TData any](fn Handle[string, TData]) Options[string, TData]
+```
+
+Convenient function for string keys with built-in FNV-1a hash sharding.
+
+string 类型 key 的便捷函数，内置 FNV-1a 哈希分片。
+
 ### Push
 
 ```go
-func (po *ParallelOrder[TData]) Push(key string, data TData) error
+func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error
 ```
 
 Push a message to the specified key's queue. Messages with the same key are guaranteed to be processed in order.
@@ -94,7 +163,7 @@ Push a message to the specified key's queue. Messages with the same key are guar
 ### Stop
 
 ```go
-func (po *ParallelOrder[TData]) Stop()
+func (po *ParallelOrder[TKey, TData]) Stop()
 ```
 
 Gracefully stop the processor. Waits for all pending messages to be processed.
@@ -104,7 +173,7 @@ Gracefully stop the processor. Waits for all pending messages to be processed.
 ### Remove
 
 ```go
-func (po *ParallelOrder[TData]) Remove(key string) bool
+func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool
 ```
 
 Remove a key and discard all its pending messages. Returns true if the key existed.
@@ -114,7 +183,7 @@ Remove a key and discard all its pending messages. Returns true if the key exist
 ### Has
 
 ```go
-func (po *ParallelOrder[TData]) Has(key string) bool
+func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool
 ```
 
 Check if a key exists.
@@ -124,7 +193,7 @@ Check if a key exists.
 ### Keys
 
 ```go
-func (po *ParallelOrder[TData]) Keys() []string
+func (po *ParallelOrder[TKey, TData]) Keys() []TKey
 ```
 
 Get all active keys.
@@ -134,7 +203,7 @@ Get all active keys.
 ### Count
 
 ```go
-func (po *ParallelOrder[TData]) Count() int
+func (po *ParallelOrder[TKey, TData]) Count() int
 ```
 
 Get the number of active keys.
@@ -176,8 +245,9 @@ func main() {
         wg.Done()
     }
 
-    // Create with custom options / 使用自定义配置创建
-    opt := parallelorder.DefaultOptions(handler).
+    // Create with custom options using DefaultOptionsString
+    // 使用 DefaultOptionsString 创建自定义配置
+    opt := parallelorder.DefaultOptionsString(handler).
         WithWorkNum(64).
         WithNodeNum(5000).
         WithMsgCapacity(1024)
@@ -211,6 +281,25 @@ func main() {
     entity.Stop()
 }
 ```
+
+## Implementation Details / 实现细节
+
+### Concurrent Map / 并发 Map
+
+使用 `github.com/orcaman/concurrent-map/v2` 作为底层并发 Map 实现，采用分片锁策略减少锁竞争。
+
+**为什么不使用 `sync.Map`？**
+
+| 特性 | `cmap.ConcurrentMap` | `sync.Map` |
+|------|---------------------|------------|
+| 类型安全 | ✅ 泛型支持 | ❌ 需要类型断言 |
+| 自定义分片 | ✅ 支持 sharding 函数 | ❌ 不支持 |
+| `SetIfAbsent` | ✅ 原生支持 | ⚠️ 需用 `LoadOrStore` |
+| `Keys()` / `Count()` | ✅ 开箱即用 | ❌ 需要 `Range()` 遍历 |
+| 读多写少场景 | ✅ 分片锁减少竞争 | ✅ 双缓冲无锁读 |
+| 写操作性能 | ✅ 分片锁，写性能稳定 | ⚠️ 写入时可能触发 dirty 提升 |
+
+在本库的使用场景中（读写混合，需要 `SetIfAbsent` 原子操作），`cmap` 更合适。
 
 ## Use Cases / 使用场景
 

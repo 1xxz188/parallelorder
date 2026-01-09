@@ -16,47 +16,67 @@ var (
 	ErrKeyDeleted     = errors.New("key has been deleted")
 )
 
-type Handle[TData any] func(key string, data TData)
+type Handle[TKey comparable, TData any] func(key TKey, data TData)
 
-type Options[TData any] struct {
+type Options[TKey comparable, TData any] struct {
 	nodeNum     uint32 //可并发元素数量,比如玩家数量，超出会被阻塞
 	workNum     uint32 //并发处理协程数
 	oneCallCnt  uint32
 	msgCapacity uint32 //单元素的消息缓存个数
-	fn          Handle[TData]
+	fn          Handle[TKey, TData]
+	sharding    func(key TKey) uint32 //key 的分片函数
 }
 
-func DefaultOptions[TData any](fn Handle[TData]) Options[TData] {
-	return Options[TData]{
+func DefaultOptions[TKey comparable, TData any](fn Handle[TKey, TData], sharding func(key TKey) uint32) Options[TKey, TData] {
+	return Options[TKey, TData]{
 		nodeNum:     10240,
 		workNum:     128,
 		oneCallCnt:  10,
 		fn:          fn,
 		msgCapacity: 1024 * 8,
+		sharding:    sharding,
 	}
 }
-func (opt Options[TData]) WithWorkNum(workNum uint32) Options[TData] {
+
+// DefaultOptionsString 便捷函数，用于 string 类型的 key
+func DefaultOptionsString[TData any](fn Handle[string, TData]) Options[string, TData] {
+	return DefaultOptions(fn, fnv32)
+}
+
+// fnv32 is FNV-1a hash for string keys
+func fnv32(key string) uint32 {
+	hash := uint32(2166136261)
+	const prime32 = uint32(16777619)
+	keyLength := len(key)
+	for i := 0; i < keyLength; i++ {
+		hash ^= uint32(key[i])
+		hash *= prime32
+	}
+	return hash
+}
+
+func (opt Options[TKey, TData]) WithWorkNum(workNum uint32) Options[TKey, TData] {
 	opt.workNum = workNum
 	return opt
 }
 
-func (opt Options[TData]) WithNodeNum(nodeNum uint32) Options[TData] {
+func (opt Options[TKey, TData]) WithNodeNum(nodeNum uint32) Options[TKey, TData] {
 	opt.nodeNum = nodeNum
 	return opt
 }
 
-func (opt Options[TData]) WithMsgCapacity(msgCapacity uint32) Options[TData] {
+func (opt Options[TKey, TData]) WithMsgCapacity(msgCapacity uint32) Options[TKey, TData] {
 	opt.msgCapacity = msgCapacity
 	return opt
 }
 
-func (opt Options[TData]) WithOneCallCnt(oneCallCnt uint32) Options[TData] {
+func (opt Options[TKey, TData]) WithOneCallCnt(oneCallCnt uint32) Options[TKey, TData] {
 	opt.oneCallCnt = oneCallCnt
 	return opt
 }
 
-type node[TData any] struct {
-	key string
+type node[TKey comparable, TData any] struct {
+	key TKey
 
 	rwLock        sync.RWMutex
 	isInReadyChan bool
@@ -65,10 +85,10 @@ type node[TData any] struct {
 	msgQueue      *queue.EsQueue[TData]
 }
 
-type ParallelOrder[TData any] struct {
-	readyChan   chan *node[TData]
-	nodeMap     cmap.ConcurrentMap[string, *node[TData]]
-	fn          Handle[TData]
+type ParallelOrder[TKey comparable, TData any] struct {
+	readyChan   chan *node[TKey, TData]
+	nodeMap     cmap.ConcurrentMap[TKey, *node[TKey, TData]]
+	fn          Handle[TKey, TData]
 	nodeNum     uint32
 	workNum     uint32
 	oneCallCnt  uint32
@@ -78,7 +98,7 @@ type ParallelOrder[TData any] struct {
 	exit        atomic.Bool    // 使用 atomic.Bool 避免数据竞争
 }
 
-func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
+func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[TKey, TData], error) {
 	if opt.nodeNum <= 0 {
 		return nil, errors.New("init nodeNum <= 0")
 	}
@@ -91,10 +111,13 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 	if opt.fn == nil {
 		return nil, errors.New("init opt.fn == nil")
 	}
+	if opt.sharding == nil {
+		return nil, errors.New("init opt.sharding == nil")
+	}
 
-	po := &ParallelOrder[TData]{
-		readyChan:   make(chan *node[TData], opt.nodeNum),
-		nodeMap:     cmap.New[*node[TData]](), //<ID, *node>
+	po := &ParallelOrder[TKey, TData]{
+		readyChan:   make(chan *node[TKey, TData], opt.nodeNum),
+		nodeMap:     cmap.NewWithCustomShardingFunction[TKey, *node[TKey, TData]](opt.sharding),
 		fn:          opt.fn,
 		nodeNum:     opt.nodeNum,
 		workNum:     opt.workNum,
@@ -157,7 +180,7 @@ func New[TData any](opt Options[TData]) (*ParallelOrder[TData], error) {
 	return po, nil
 }
 
-func (po *ParallelOrder[TData]) Push(key string, data TData) error {
+func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error {
 	if po.exit.Load() {
 		return ErrWasExited
 	}
@@ -170,11 +193,11 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 		return ErrWasExited
 	}
 
-	var item *node[TData]
+	var item *node[TKey, TData]
 	item, ok := po.nodeMap.Get(key)
 	if !ok || item.deleted.Load() {
 		// key 不存在或已被删除，创建新节点
-		newItem := &node[TData]{
+		newItem := &node[TKey, TData]{
 			key:      key,
 			msgQueue: queue.NewQueue[TData](po.msgCapacity),
 		}
@@ -213,7 +236,7 @@ func (po *ParallelOrder[TData]) Push(key string, data TData) error {
 	return nil
 }
 
-func (po *ParallelOrder[TData]) Stop() {
+func (po *ParallelOrder[TKey, TData]) Stop() {
 	// 使用 CompareAndSwap 保证只有一个 goroutine 能执行 Stop 逻辑
 	if !po.exit.CompareAndSwap(false, true) {
 		return
@@ -223,7 +246,7 @@ func (po *ParallelOrder[TData]) Stop() {
 	po.pushWg.Wait()
 
 	// 抛入退出事件
-	var item node[TData]
+	var item node[TKey, TData]
 	item.exit = true
 	for i := uint32(0); i < po.workNum; i++ {
 		po.readyChan <- &item
@@ -263,7 +286,7 @@ END:
 // Remove 删除指定 key，会丢弃该 key 所有未处理的消息
 // 如果 key 正在被处理，会等待当前消息处理完毕后停止
 // 删除后可以重新 Push 相同的 key，会创建新的节点
-func (po *ParallelOrder[TData]) Remove(key string) bool {
+func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool {
 	if po.exit.Load() {
 		return false
 	}
@@ -291,7 +314,7 @@ func (po *ParallelOrder[TData]) Remove(key string) bool {
 }
 
 // Has 检查 key 是否存在
-func (po *ParallelOrder[TData]) Has(key string) bool {
+func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool {
 	item, ok := po.nodeMap.Get(key)
 	if !ok {
 		return false
@@ -300,9 +323,9 @@ func (po *ParallelOrder[TData]) Has(key string) bool {
 }
 
 // Keys 返回所有有效的 key 列表
-func (po *ParallelOrder[TData]) Keys() []string {
+func (po *ParallelOrder[TKey, TData]) Keys() []TKey {
 	keys := po.nodeMap.Keys()
-	result := make([]string, 0, len(keys))
+	result := make([]TKey, 0, len(keys))
 	for _, key := range keys {
 		if item, ok := po.nodeMap.Get(key); ok && !item.deleted.Load() {
 			result = append(result, key)
@@ -312,6 +335,6 @@ func (po *ParallelOrder[TData]) Keys() []string {
 }
 
 // Count 返回有效的 key 数量
-func (po *ParallelOrder[TData]) Count() int {
+func (po *ParallelOrder[TKey, TData]) Count() int {
 	return po.nodeMap.Count()
 }

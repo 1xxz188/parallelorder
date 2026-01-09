@@ -19,7 +19,7 @@ func TestDemo(t *testing.T) {
 		close(exitChan)
 	}
 
-	entity, err := New(DefaultOptions(fn))
+	entity, err := New(DefaultOptionsString(fn))
 	require.NoError(t, err)
 
 	err = entity.Push("key", "value")
@@ -61,7 +61,7 @@ func TestMultiPushMsg(t *testing.T) {
 		}
 	}
 
-	entity, err := New(DefaultOptions(fn))
+	entity, err := New(DefaultOptionsString(fn))
 	require.NoError(t, err)
 
 	var wg sync.WaitGroup
@@ -102,7 +102,7 @@ func TestStop(t *testing.T) {
 	handle := func(key string, data int) {
 		cnt++
 	}
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 	sendGoCnt := 1000
 	for i := 0; i < sendGoCnt; i++ {
@@ -125,7 +125,7 @@ func TestRemove(t *testing.T) {
 		time.Sleep(time.Millisecond * 10) // 模拟处理耗时
 	}
 
-	entity, err := New[int](DefaultOptions(handle).WithWorkNum(4))
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(4))
 	require.NoError(t, err)
 
 	// 推送一些消息
@@ -163,7 +163,7 @@ func TestRemove(t *testing.T) {
 func TestHas(t *testing.T) {
 	handle := func(key string, data int) {}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// 初始状态没有 key
@@ -185,7 +185,7 @@ func TestHas(t *testing.T) {
 func TestKeys(t *testing.T) {
 	handle := func(key string, data int) {}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// 初始状态没有 key
@@ -215,7 +215,7 @@ func TestKeys(t *testing.T) {
 func TestCount(t *testing.T) {
 	handle := func(key string, data int) {}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	require.Equal(t, 0, entity.Count())
@@ -240,7 +240,7 @@ func TestConcurrentRemove(t *testing.T) {
 		atomic.AddInt32(&processedCount, 1)
 	}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// 创建多个 key
@@ -277,7 +277,7 @@ func TestRemoveAndPush(t *testing.T) {
 		mu.Unlock()
 	}
 
-	entity, err := New[string](DefaultOptions(handle))
+	entity, err := New[string, string](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// 第一轮 Push
@@ -307,19 +307,19 @@ func TestOptions(t *testing.T) {
 	handle := func(key string, data int) {}
 
 	// 测试默认配置
-	opt := DefaultOptions(handle)
-	entity, err := New[int](opt)
+	opt := DefaultOptionsString(handle)
+	entity, err := New[string, int](opt)
 	require.NoError(t, err)
 	entity.Stop()
 
 	// 测试自定义配置
-	opt = DefaultOptions(handle).
+	opt = DefaultOptionsString(handle).
 		WithNodeNum(100).
 		WithWorkNum(8).
 		WithMsgCapacity(512).
 		WithOneCallCnt(5)
 
-	entity, err = New[int](opt)
+	entity, err = New[string, int](opt)
 	require.NoError(t, err)
 	entity.Stop()
 }
@@ -329,23 +329,23 @@ func TestInvalidOptions(t *testing.T) {
 	handle := func(key string, data int) {}
 
 	// nodeNum <= 0
-	opt := DefaultOptions(handle).WithNodeNum(0)
-	_, err := New[int](opt)
+	opt := DefaultOptionsString(handle).WithNodeNum(0)
+	_, err := New[string, int](opt)
 	require.Error(t, err)
 
 	// workNum <= 0
-	opt = DefaultOptions(handle).WithWorkNum(0)
-	_, err = New[int](opt)
+	opt = DefaultOptionsString(handle).WithWorkNum(0)
+	_, err = New[string, int](opt)
 	require.Error(t, err)
 
 	// oneCallCnt <= 0
-	opt = DefaultOptions(handle).WithOneCallCnt(0)
-	_, err = New[int](opt)
+	opt = DefaultOptionsString(handle).WithOneCallCnt(0)
+	_, err = New[string, int](opt)
 	require.Error(t, err)
 
 	// fn == nil
-	opt = DefaultOptions[int](nil)
-	_, err = New[int](opt)
+	opt = DefaultOptionsString[int](nil)
+	_, err = New[string, int](opt)
 	require.Error(t, err)
 }
 
@@ -358,8 +358,8 @@ func TestQueueFull(t *testing.T) {
 	}
 
 	// 使用很小的队列容量
-	opt := DefaultOptions(handle).WithMsgCapacity(10)
-	entity, err := New[int](opt)
+	opt := DefaultOptionsString(handle).WithMsgCapacity(10)
+	entity, err := New[string, int](opt)
 	require.NoError(t, err)
 
 	// 快速填满队列
@@ -385,7 +385,7 @@ func TestConcurrentStop(t *testing.T) {
 		atomic.AddInt32(&cnt, 1)
 	}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// Push 一些消息
@@ -415,7 +415,7 @@ func TestPushAfterRemove(t *testing.T) {
 		atomic.AddInt32(&processedCount, 1)
 	}
 
-	entity, err := New[int](DefaultOptions(handle))
+	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
 
 	// 先创建 key
@@ -452,8 +452,8 @@ func TestOrderGuarantee(t *testing.T) {
 		mu.Unlock()
 	}
 
-	opt := DefaultOptions(handle).WithWorkNum(16)
-	entity, err := New[int](opt)
+	opt := DefaultOptionsString(handle).WithWorkNum(16)
+	entity, err := New[string, int](opt)
 	require.NoError(t, err)
 
 	// 向同一个 key 按顺序 Push
@@ -470,4 +470,99 @@ func TestOrderGuarantee(t *testing.T) {
 	for i := 0; i < msgCount; i++ {
 		require.Equal(t, i, results[i], "Message order should be preserved")
 	}
+}
+
+// TestIntKey 测试使用 int 作为 key
+func TestIntKey(t *testing.T) {
+	var results sync.Map
+
+	handle := func(key int, data string) {
+		results.Store(key, data)
+	}
+
+	// 使用自定义 sharding 函数
+	sharding := func(key int) uint32 {
+		return uint32(key)
+	}
+
+	entity, err := New[int, string](DefaultOptions(handle, sharding))
+	require.NoError(t, err)
+
+	entity.Push(1, "one")
+	entity.Push(2, "two")
+	entity.Push(3, "three")
+
+	entity.Stop()
+
+	v, ok := results.Load(1)
+	require.True(t, ok)
+	require.Equal(t, "one", v)
+
+	v, ok = results.Load(2)
+	require.True(t, ok)
+	require.Equal(t, "two", v)
+
+	v, ok = results.Load(3)
+	require.True(t, ok)
+	require.Equal(t, "three", v)
+}
+
+// TestCustomKeyType 测试自定义 key 类型
+func TestCustomKeyType(t *testing.T) {
+	type UserID struct {
+		Region string
+		ID     int
+	}
+
+	var results sync.Map
+
+	handle := func(key UserID, data string) {
+		results.Store(key, data)
+	}
+
+	// 使用自定义 sharding 函数
+	sharding := func(key UserID) uint32 {
+		hash := uint32(2166136261)
+		const prime32 = uint32(16777619)
+		for i := 0; i < len(key.Region); i++ {
+			hash ^= uint32(key.Region[i])
+			hash *= prime32
+		}
+		hash ^= uint32(key.ID)
+		hash *= prime32
+		return hash
+	}
+
+	entity, err := New[UserID, string](DefaultOptions(handle, sharding))
+	require.NoError(t, err)
+
+	user1 := UserID{Region: "us", ID: 1}
+	user2 := UserID{Region: "eu", ID: 2}
+
+	entity.Push(user1, "hello")
+	entity.Push(user2, "world")
+
+	entity.Stop()
+
+	v, ok := results.Load(user1)
+	require.True(t, ok)
+	require.Equal(t, "hello", v)
+
+	v, ok = results.Load(user2)
+	require.True(t, ok)
+	require.Equal(t, "world", v)
+
+	// 测试 Has 和 Keys
+	entity2, err := New[UserID, string](DefaultOptions(handle, sharding))
+	require.NoError(t, err)
+
+	entity2.Push(user1, "test1")
+	require.True(t, entity2.Has(user1))
+	require.False(t, entity2.Has(user2))
+
+	entity2.Push(user2, "test2")
+	keys := entity2.Keys()
+	require.Len(t, keys, 2)
+
+	entity2.Stop()
 }
