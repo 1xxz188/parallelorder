@@ -35,18 +35,8 @@ func main() {
         fmt.Println(key, data)
     }
 
-    // string 类型 key 的自定义分片函数（使用 FNV-1a 哈希）
-    sharding := func(key string) uint32 {
-        hash := uint32(2166136261)
-        const prime32 = uint32(16777619)
-        for i := 0; i < len(key); i++ {
-            hash ^= uint32(key[i])
-            hash *= prime32
-        }
-        return hash
-    }
-
-    entity, err := parallelorder.New(parallelorder.DefaultOptions(fn, sharding))
+    // 使用 DefaultOptionsString 处理 string 类型的 key（内置 FNV-1a 哈希）
+    entity, err := parallelorder.New(parallelorder.DefaultOptionsString(fn))
     if err != nil {
         panic(err)
     }
@@ -229,19 +219,8 @@ func main() {
         wg.Done()
     }
 
-    // 为 string 类型 key 定义分片函数
-    sharding := func(key string) uint32 {
-        hash := uint32(2166136261)
-        const prime32 = uint32(16777619)
-        for i := 0; i < len(key); i++ {
-            hash ^= uint32(key[i])
-            hash *= prime32
-        }
-        return hash
-    }
-
-    // 使用自定义配置创建
-    opt := parallelorder.DefaultOptions(handler, sharding).
+    // 使用 DefaultOptionsString 创建自定义配置
+    opt := parallelorder.DefaultOptionsString(handler).
         WithWorkNum(64).
         WithNodeNum(5000).
         WithMsgCapacity(1024)
@@ -275,12 +254,6 @@ func main() {
     entity.Stop()
 }
 ```
-
-## 实现细节
-
-### 并发 Map
-
-使用 `github.com/orcaman/concurrent-map/v2` 作为底层并发 Map 实现，采用分片锁策略减少锁竞争。
 
 ## 使用场景
 

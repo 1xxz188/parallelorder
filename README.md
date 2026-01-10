@@ -35,18 +35,8 @@ func main() {
         fmt.Println(key, data)
     }
 
-    // Custom sharding function for string keys (using FNV-1a hash)
-    sharding := func(key string) uint32 {
-        hash := uint32(2166136261)
-        const prime32 = uint32(16777619)
-        for i := 0; i < len(key); i++ {
-            hash ^= uint32(key[i])
-            hash *= prime32
-        }
-        return hash
-    }
-
-    entity, err := parallelorder.New(parallelorder.DefaultOptions(fn, sharding))
+    // Use DefaultOptionsString for string keys (built-in FNV-1a hash)
+    entity, err := parallelorder.New(parallelorder.DefaultOptionsString(fn))
     if err != nil {
         panic(err)
     }
@@ -229,19 +219,8 @@ func main() {
         wg.Done()
     }
 
-    // Define sharding function for string keys
-    sharding := func(key string) uint32 {
-        hash := uint32(2166136261)
-        const prime32 = uint32(16777619)
-        for i := 0; i < len(key); i++ {
-            hash ^= uint32(key[i])
-            hash *= prime32
-        }
-        return hash
-    }
-
-    // Create with custom options
-    opt := parallelorder.DefaultOptions(handler, sharding).
+    // Create with custom options using DefaultOptionsString
+    opt := parallelorder.DefaultOptionsString(handler).
         WithWorkNum(64).
         WithNodeNum(5000).
         WithMsgCapacity(1024)
@@ -275,12 +254,6 @@ func main() {
     entity.Stop()
 }
 ```
-
-## Implementation Details
-
-### Concurrent Map
-
-Uses `github.com/orcaman/concurrent-map/v2` as the underlying concurrent map implementation, adopting a sharded locking strategy to reduce lock contention.
 
 ## Use Cases
 
