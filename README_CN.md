@@ -1,25 +1,25 @@
 # parallelorder
 
-High-performance parallel ordered message processor with head-of-line blocking solution.
+高性能并行有序消息处理器，解决队头阻塞问题。
 
-## Features
+## 特性
 
-- **Ordered Processing**: Same key messages are processed sequentially
-- **Parallel Execution**: Different keys are processed concurrently
-- **Thread-Safe**: All operations are goroutine-safe
-- **Graceful Shutdown**: Stop() waits for all messages to be processed
-- **Dynamic Key Management**: Support adding and removing keys at runtime
-- **Generic Support**: Works with any comparable key type and any data type
+- **有序处理**: 相同 key 的消息按顺序处理
+- **并行执行**: 不同 key 并行处理
+- **线程安全**: 所有操作都是协程安全的
+- **优雅关闭**: Stop() 会等待所有消息处理完成
+- **动态 Key 管理**: 支持运行时添加和删除 key
+- **泛型支持**: 支持任意可比较的 key 类型和任意数据类型
 
-## Install
+## 安装
 
 ```bash
 go get github.com/1xxz188/parallelorder/v2@latest
 ```
 
-## Quick Start
+## 快速开始
 
-### String Key (Recommended for most cases)
+### String Key（大多数场景推荐）
 
 ```go
 package main
@@ -30,12 +30,12 @@ import (
 )
 
 func main() {
-    // Define handler function
+    // 定义处理函数
     fn := func(key string, data string) {
         fmt.Println(key, data)
     }
 
-    // Custom sharding function for string keys (using FNV-1a hash)
+    // string 类型 key 的自定义分片函数（使用 FNV-1a 哈希）
     sharding := func(key string) uint32 {
         hash := uint32(2166136261)
         const prime32 = uint32(16777619)
@@ -51,17 +51,17 @@ func main() {
         panic(err)
     }
 
-    // Push messages
+    // 推送消息
     entity.Push("player1", "login")
-    entity.Push("player1", "move")    // Will be processed after "login"
-    entity.Push("player2", "login")   // Processed concurrently with player1
+    entity.Push("player1", "move")    // 会在 "login" 之后处理
+    entity.Push("player2", "login")   // 与 player1 并行处理
 
-    // Graceful shutdown
+    // 优雅关闭
     entity.Stop()
 }
 ```
 
-### Custom Key Type
+### 自定义 Key 类型
 
 ```go
 package main
@@ -72,12 +72,12 @@ import (
 )
 
 func main() {
-    // Handler with int64 key
+    // 使用 int64 作为 key 的处理函数
     fn := func(userID int64, data string) {
         fmt.Printf("User %d: %s\n", userID, data)
     }
 
-    // Custom sharding function for int64 keys
+    // int64 key 的自定义分片函数
     sharding := func(key int64) uint32 {
         return uint32(key)
     }
@@ -94,36 +94,36 @@ func main() {
 }
 ```
 
-## Configuration
+## 配置选项
 
 ```go
-// Define sharding function for your key type
+// 为你的 key 类型定义分片函数
 sharding := func(key string) uint32 {
-    // Your sharding logic here
-    return uint32(len(key)) // Example
+    // 你的分片逻辑
+    return uint32(len(key)) // 示例
 }
 
-// Default options with custom key type and sharding
+// 自定义 key 类型和分片函数的默认配置
 opt := parallelorder.DefaultOptions(fn, sharding)
 
-// Customize with builder pattern
+// 使用构建器模式自定义配置
 opt = parallelorder.DefaultOptions(fn, sharding).
-    WithNodeNum(10240).      // Max concurrent keys (default: 10240)
-    WithWorkNum(128).        // Worker goroutine count (default: 128)
-    WithMsgCapacity(8192).   // Message queue capacity per key (default: 8192)
-    WithOneCallCnt(10)       // Messages processed per batch (default: 10)
+    WithNodeNum(10240).      // 最大并发 key 数量 (默认: 10240)
+    WithWorkNum(128).        // 工作协程数量 (默认: 128)
+    WithMsgCapacity(8192).   // 每个 key 的消息队列容量 (默认: 8192)
+    WithOneCallCnt(10)       // 每批处理的消息数量 (默认: 10)
 
 entity, err := parallelorder.New(opt)
 ```
 
-| Option | Default | Description |
+| 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
-| `nodeNum` | 10240 | Maximum number of concurrent keys. Exceeding this will block Push() |
-| `workNum` | 128 | Number of worker goroutines |
-| `msgCapacity` | 8192 | Message queue capacity per key |
-| `oneCallCnt` | 10 | Messages to process before yielding to other keys |
+| `nodeNum` | 10240 | 最大并发 key 数量，超出会阻塞 Push() |
+| `workNum` | 128 | 工作协程数量 |
+| `msgCapacity` | 8192 | 每个 key 的消息队列容量 |
+| `oneCallCnt` | 10 | 每次处理多少消息后切换到其他 key |
 
-## API Reference
+## API 参考
 
 ### New
 
@@ -131,7 +131,7 @@ entity, err := parallelorder.New(opt)
 func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[TKey, TData], error)
 ```
 
-Create a new ParallelOrder instance.
+创建一个新的 ParallelOrder 实例。
 
 ### DefaultOptions
 
@@ -139,7 +139,7 @@ Create a new ParallelOrder instance.
 func DefaultOptions[TKey comparable, TData any](fn Handle[TKey, TData], sharding func(key TKey) uint32) Options[TKey, TData]
 ```
 
-Create default options with custom key type and sharding function.
+使用自定义 key 类型和分片函数创建默认配置。
 
 ### Push
 
@@ -147,12 +147,12 @@ Create default options with custom key type and sharding function.
 func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error
 ```
 
-Push a message to the specified key's queue. Messages with the same key are guaranteed to be processed in order.
+向指定 key 的队列推送消息。相同 key 的消息保证按顺序处理。
 
-**Errors:**
-- `ErrWasExited` - ParallelOrder has been stopped
-- `ErrPutFail` - Message queue is full
-- `ErrKeyDeleted` - Key has been deleted
+**错误:**
+- `ErrWasExited` - 已经停止
+- `ErrPutFail` - 消息队列已满
+- `ErrKeyDeleted` - Key 已被删除
 
 ### Stop
 
@@ -160,7 +160,7 @@ Push a message to the specified key's queue. Messages with the same key are guar
 func (po *ParallelOrder[TKey, TData]) Stop()
 ```
 
-Gracefully stop the processor. Waits for all pending messages to be processed.
+优雅停止处理器。会等待所有待处理的消息处理完成。
 
 ### Remove
 
@@ -168,7 +168,7 @@ Gracefully stop the processor. Waits for all pending messages to be processed.
 func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool
 ```
 
-Remove a key and discard all its pending messages. Returns true if the key existed.
+删除一个 key 并丢弃其所有未处理的消息。如果 key 存在返回 true。
 
 ### Has
 
@@ -176,7 +176,7 @@ Remove a key and discard all its pending messages. Returns true if the key exist
 func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool
 ```
 
-Check if a key exists.
+检查 key 是否存在。
 
 ### Keys
 
@@ -184,7 +184,7 @@ Check if a key exists.
 func (po *ParallelOrder[TKey, TData]) Keys() []TKey
 ```
 
-Get all active keys.
+获取所有有效的 key 列表。
 
 ### Count
 
@@ -192,20 +192,20 @@ Get all active keys.
 func (po *ParallelOrder[TKey, TData]) Count() int
 ```
 
-Get the number of active keys.
+获取有效 key 的数量。
 
-## Error Types
+## 错误类型
 
 ```go
 var (
-    ErrPutFail        = errors.New("put key fail maybe queue is full")
-    ErrWasExited      = errors.New("ParallelOrder was exited")
-    ErrPushNotFindKey = errors.New("push not find key")
-    ErrKeyDeleted     = errors.New("key has been deleted")
+    ErrPutFail        = errors.New("put key fail maybe queue is full")  // 队列已满
+    ErrWasExited      = errors.New("ParallelOrder was exited")          // 已停止
+    ErrPushNotFindKey = errors.New("push not find key")                 // 内部错误
+    ErrKeyDeleted     = errors.New("key has been deleted")              // key 已删除
 )
 ```
 
-## Advanced Example
+## 高级示例
 
 ```go
 package main
@@ -229,7 +229,7 @@ func main() {
         wg.Done()
     }
 
-    // Define sharding function for string keys
+    // 为 string 类型 key 定义分片函数
     sharding := func(key string) uint32 {
         hash := uint32(2166136261)
         const prime32 = uint32(16777619)
@@ -240,7 +240,7 @@ func main() {
         return hash
     }
 
-    // Create with custom options
+    // 使用自定义配置创建
     opt := parallelorder.DefaultOptions(handler, sharding).
         WithWorkNum(64).
         WithNodeNum(5000).
@@ -251,7 +251,7 @@ func main() {
         panic(err)
     }
 
-    // Simulate game events
+    // 模拟游戏事件
     players := []string{"player1", "player2", "player3"}
     actions := []string{"login", "move", "attack", "logout"}
 
@@ -264,11 +264,11 @@ func main() {
 
     wg.Wait()
 
-    // Check active players
+    // 检查活跃玩家
     fmt.Println("Active players:", entity.Keys())
     fmt.Println("Player count:", entity.Count())
 
-    // Remove a player
+    // 移除玩家
     entity.Remove("player1")
     fmt.Println("Has player1:", entity.Has("player1"))
 
@@ -276,19 +276,20 @@ func main() {
 }
 ```
 
-## Implementation Details
+## 实现细节
 
-### Concurrent Map
+### 并发 Map
 
-Uses `github.com/orcaman/concurrent-map/v2` as the underlying concurrent map implementation, adopting a sharded locking strategy to reduce lock contention.
+使用 `github.com/orcaman/concurrent-map/v2` 作为底层并发 Map 实现，采用分片锁策略减少锁竞争。
 
-## Use Cases
+## 使用场景
 
-- **Game Server**: Process player actions in order while handling multiple players concurrently
-- **Message Queue Consumer**: Ensure ordered processing per partition/key
-- **Event Sourcing**: Process events for each aggregate in order
-- **Rate Limiting per User**: Process requests per user sequentially
+- **游戏服务器**: 按顺序处理玩家操作，同时并发处理多个玩家
+- **消息队列消费者**: 确保每个分区/key 的有序处理
+- **事件溯源**: 按顺序处理每个聚合的事件
+- **用户级限流**: 按用户顺序处理请求
 
-## License
+## 许可证
 
 MIT License
+
