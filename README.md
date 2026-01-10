@@ -79,7 +79,7 @@ func main() {
 
     // Custom sharding function for int64 keys
     sharding := func(key int64) uint32 {
-        return uint32(key)
+        return uint32(key) ^ uint32(key>>32)
     }
 
     entity, err := parallelorder.New(parallelorder.DefaultOptions(fn, sharding))
