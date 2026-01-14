@@ -1,4 +1,4 @@
-package parallelorder
+package parq
 
 import (
 	"errors"
@@ -11,12 +11,12 @@ import (
 
 var (
 	ErrPutFail        = errors.New("put key fail maybe queue is full")
-	ErrWasExited      = errors.New("ParallelOrder was exited")
+	ErrWasExited      = errors.New("Parq was exited")
 	ErrPushNotFindKey = errors.New("push not find key")
 	ErrKeyDeleted     = errors.New("key has been deleted")
 )
 
-type Handle[TKey comparable, TData any] func(po *ParallelOrder[TKey, TData], key TKey, data TData)
+type Handle[TKey comparable, TData any] func(pq *Parq[TKey, TData], key TKey, data TData)
 
 type Options[TKey comparable, TData any] struct {
 	nodeNum     uint32 //可并发元素数量,比如玩家数量，超出会被阻塞
@@ -85,7 +85,7 @@ type node[TKey comparable, TData any] struct {
 	msgQueue      *queue.EsQueue[TData]
 }
 
-type ParallelOrder[TKey comparable, TData any] struct {
+type Parq[TKey comparable, TData any] struct {
 	readyChan   chan *node[TKey, TData]
 	nodeMap     cmap.ConcurrentMap[TKey, *node[TKey, TData]]
 	fn          Handle[TKey, TData]
@@ -98,7 +98,7 @@ type ParallelOrder[TKey comparable, TData any] struct {
 	exit        atomic.Bool    // 使用 atomic.Bool 避免数据竞争
 }
 
-func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[TKey, TData], error) {
+func New[TKey comparable, TData any](opt Options[TKey, TData]) (*Parq[TKey, TData], error) {
 	if opt.nodeNum <= 0 {
 		return nil, errors.New("init nodeNum <= 0")
 	}
@@ -115,7 +115,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 		return nil, errors.New("init opt.sharding == nil")
 	}
 
-	po := &ParallelOrder[TKey, TData]{
+	pq := &Parq[TKey, TData]{
 		readyChan:   make(chan *node[TKey, TData], opt.nodeNum),
 		nodeMap:     cmap.NewWithCustomShardingFunction[TKey, *node[TKey, TData]](opt.sharding),
 		fn:          opt.fn,
@@ -124,12 +124,12 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 		oneCallCnt:  opt.oneCallCnt,
 		msgCapacity: opt.msgCapacity,
 	}
-	po.workGp.Add(int(po.workNum))
-	for i := uint32(0); i < po.workNum; i++ {
+	pq.workGp.Add(int(pq.workNum))
+	for i := uint32(0); i < pq.workNum; i++ {
 		go func() {
-			defer po.workGp.Done()
+			defer pq.workGp.Done()
 
-			for item := range po.readyChan {
+			for item := range pq.readyChan {
 				if item.exit {
 					break
 				}
@@ -141,7 +141,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 				var quantity uint32
 				var ok bool
 				var msg TData
-				for i := uint32(0); i < po.oneCallCnt; i++ {
+				for i := uint32(0); i < pq.oneCallCnt; i++ {
 					msg, ok, quantity = item.msgQueue.Get()
 					if !ok {
 						break
@@ -150,7 +150,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 					if item.deleted.Load() {
 						break
 					}
-					po.fn(po, item.key, msg)
+					pq.fn(pq, item.key, msg)
 					if quantity <= 0 {
 						break
 					}
@@ -163,7 +163,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 						continue
 					}
 					if item.msgQueue.Quantity() > 0 {
-						po.readyChan <- item
+						pq.readyChan <- item
 					} else {
 						item.isInReadyChan = false
 					}
@@ -171,41 +171,41 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 				} else { //still have value, so push again
 					// 已删除的节点不再放回
 					if !item.deleted.Load() {
-						po.readyChan <- item
+						pq.readyChan <- item
 					}
 				}
 			}
 		}()
 	}
-	return po, nil
+	return pq, nil
 }
 
-func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error {
-	if po.exit.Load() {
+func (pq *Parq[TKey, TData]) Push(key TKey, data TData) error {
+	if pq.exit.Load() {
 		return ErrWasExited
 	}
 
-	po.pushWg.Add(1)
-	defer po.pushWg.Done()
+	pq.pushWg.Add(1)
+	defer pq.pushWg.Done()
 
 	// 再次检查，避免在 Add 之前 Stop 已经开始
-	if po.exit.Load() {
+	if pq.exit.Load() {
 		return ErrWasExited
 	}
 
 	var item *node[TKey, TData]
-	item, ok := po.nodeMap.Get(key)
+	item, ok := pq.nodeMap.Get(key)
 	if !ok || item.deleted.Load() {
 		// key 不存在或已被删除，创建新节点
 		newItem := &node[TKey, TData]{
 			key:      key,
-			msgQueue: queue.NewQueue[TData](po.msgCapacity),
+			msgQueue: queue.NewQueue[TData](pq.msgCapacity),
 		}
-		if ok := po.nodeMap.SetIfAbsent(key, newItem); ok {
+		if ok := pq.nodeMap.SetIfAbsent(key, newItem); ok {
 			item = newItem
 		} else {
 			// SetIfAbsent 失败，说明其他 goroutine 已创建，重新获取
-			item, ok = po.nodeMap.Get(key)
+			item, ok = pq.nodeMap.Get(key)
 			if !ok {
 				return ErrPushNotFindKey
 			}
@@ -232,31 +232,31 @@ func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error {
 		return nil
 	}
 	item.isInReadyChan = true
-	po.readyChan <- item
+	pq.readyChan <- item
 	return nil
 }
 
-func (po *ParallelOrder[TKey, TData]) Stop() {
+func (pq *Parq[TKey, TData]) Stop() {
 	// 使用 CompareAndSwap 保证只有一个 goroutine 能执行 Stop 逻辑
-	if !po.exit.CompareAndSwap(false, true) {
+	if !pq.exit.CompareAndSwap(false, true) {
 		return
 	}
 
 	// 等待所有正在进行的 Push 操作完成
-	po.pushWg.Wait()
+	pq.pushWg.Wait()
 
 	// 抛入退出事件
 	var item node[TKey, TData]
 	item.exit = true
-	for i := uint32(0); i < po.workNum; i++ {
-		po.readyChan <- &item
+	for i := uint32(0); i < pq.workNum; i++ {
+		pq.readyChan <- &item
 	}
-	po.workGp.Wait()
+	pq.workGp.Wait()
 
 	// 最后排空处理
 	for {
 		select {
-		case item, ok := <-po.readyChan:
+		case item, ok := <-pq.readyChan:
 			if !ok {
 				goto END // 修复: 使用 goto 跳出循环
 			}
@@ -271,7 +271,7 @@ func (po *ParallelOrder[TKey, TData]) Stop() {
 				if !ok {
 					break
 				}
-				po.fn(po, item.key, msg)
+				pq.fn(pq, item.key, msg)
 				if quantity <= 0 {
 					break
 				}
@@ -286,12 +286,12 @@ END:
 // Remove 删除指定 key，会丢弃该 key 所有未处理的消息
 // 如果 key 正在被处理，会等待当前消息处理完毕后停止
 // 删除后可以重新 Push 相同的 key，会创建新的节点
-func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool {
-	if po.exit.Load() {
+func (pq *Parq[TKey, TData]) Remove(key TKey) bool {
+	if pq.exit.Load() {
 		return false
 	}
 
-	item, ok := po.nodeMap.Get(key)
+	item, ok := pq.nodeMap.Get(key)
 	if !ok {
 		return false
 	}
@@ -308,14 +308,14 @@ func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool {
 	item.deleted.Store(true)
 
 	// 从 nodeMap 中移除
-	po.nodeMap.Remove(key)
+	pq.nodeMap.Remove(key)
 
 	return true
 }
 
 // Has 检查 key 是否存在
-func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool {
-	item, ok := po.nodeMap.Get(key)
+func (pq *Parq[TKey, TData]) Has(key TKey) bool {
+	item, ok := pq.nodeMap.Get(key)
 	if !ok {
 		return false
 	}
@@ -323,11 +323,11 @@ func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool {
 }
 
 // Keys 返回所有有效的 key 列表
-func (po *ParallelOrder[TKey, TData]) Keys() []TKey {
-	keys := po.nodeMap.Keys()
+func (pq *Parq[TKey, TData]) Keys() []TKey {
+	keys := pq.nodeMap.Keys()
 	result := make([]TKey, 0, len(keys))
 	for _, key := range keys {
-		if item, ok := po.nodeMap.Get(key); ok && !item.deleted.Load() {
+		if item, ok := pq.nodeMap.Get(key); ok && !item.deleted.Load() {
 			result = append(result, key)
 		}
 	}
@@ -335,6 +335,6 @@ func (po *ParallelOrder[TKey, TData]) Keys() []TKey {
 }
 
 // Count 返回有效的 key 数量
-func (po *ParallelOrder[TKey, TData]) Count() int {
-	return po.nodeMap.Count()
+func (pq *Parq[TKey, TData]) Count() int {
+	return pq.nodeMap.Count()
 }

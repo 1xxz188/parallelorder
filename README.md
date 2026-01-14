@@ -1,6 +1,6 @@
-# parallelorder
+# parq
 
-High-performance parallel ordered message processor with head-of-line blocking solution.
+High-performance parallel ordered message processor with head-of-line blocking solution. (parq = **par**allel **q**ueue)
 
 ## Features
 
@@ -14,7 +14,7 @@ High-performance parallel ordered message processor with head-of-line blocking s
 ## Install
 
 ```bash
-go get github.com/1xxz188/parallelorder/v2@latest
+go get github.com/1xxz188/parq@latest
 ```
 
 ## Quick Start
@@ -26,17 +26,17 @@ package main
 
 import (
     "fmt"
-    "github.com/1xxz188/parallelorder/v2"
+    "github.com/1xxz188/parq"
 )
 
 func main() {
-    // Define handler function (first parameter is the ParallelOrder pointer)
-    fn := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
+    // Define handler function (first parameter is the Parq pointer)
+    fn := func(pq *parq.Parq[string, string], key string, data string) {
         fmt.Println(key, data)
     }
 
     // Use DefaultOptionsString for string keys (built-in FNV-1a hash)
-    entity, err := parallelorder.New(parallelorder.DefaultOptionsString(fn))
+    entity, err := parq.New(parq.DefaultOptionsString(fn))
     if err != nil {
         panic(err)
     }
@@ -58,12 +58,12 @@ package main
 
 import (
     "fmt"
-    "github.com/1xxz188/parallelorder/v2"
+    "github.com/1xxz188/parq"
 )
 
 func main() {
-    // Handler with int64 key (first parameter is the ParallelOrder pointer)
-    fn := func(po *parallelorder.ParallelOrder[int64, string], userID int64, data string) {
+    // Handler with int64 key (first parameter is the Parq pointer)
+    fn := func(pq *parq.Parq[int64, string], userID int64, data string) {
         fmt.Printf("User %d: %s\n", userID, data)
     }
 
@@ -72,7 +72,7 @@ func main() {
         return uint32(key) ^ uint32(key>>32)
     }
 
-    entity, err := parallelorder.New(parallelorder.DefaultOptions(fn, sharding))
+    entity, err := parq.New(parq.DefaultOptions(fn, sharding))
     if err != nil {
         panic(err)
     }
@@ -94,16 +94,16 @@ sharding := func(key string) uint32 {
 }
 
 // Default options with custom key type and sharding
-opt := parallelorder.DefaultOptions(fn, sharding)
+opt := parq.DefaultOptions(fn, sharding)
 
 // Customize with builder pattern
-opt = parallelorder.DefaultOptions(fn, sharding).
+opt = parq.DefaultOptions(fn, sharding).
     WithNodeNum(10240).      // Max concurrent keys (default: 10240)
     WithWorkNum(128).        // Worker goroutine count (default: 128)
     WithMsgCapacity(8192).   // Message queue capacity per key (default: 8192)
     WithOneCallCnt(10)       // Messages processed per batch (default: 10)
 
-entity, err := parallelorder.New(opt)
+entity, err := parq.New(opt)
 ```
 
 | Option | Default | Description |
@@ -118,18 +118,18 @@ entity, err := parallelorder.New(opt)
 ### Handle
 
 ```go
-type Handle[TKey comparable, TData any] func(po *ParallelOrder[TKey, TData], key TKey, data TData)
+type Handle[TKey comparable, TData any] func(pq *Parq[TKey, TData], key TKey, data TData)
 ```
 
-The handler function type. The first parameter `po` is the ParallelOrder instance pointer, allowing you to call methods like `Push`, `Remove`, `Has` within the handler.
+The handler function type. The first parameter `pq` is the Parq instance pointer, allowing you to call methods like `Push`, `Remove`, `Has` within the handler.
 
 ### New
 
 ```go
-func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[TKey, TData], error)
+func New[TKey comparable, TData any](opt Options[TKey, TData]) (*Parq[TKey, TData], error)
 ```
 
-Create a new ParallelOrder instance.
+Create a new Parq instance.
 
 ### DefaultOptions
 
@@ -142,20 +142,20 @@ Create default options with custom key type and sharding function.
 ### Push
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Push(key TKey, data TData) error
+func (pq *Parq[TKey, TData]) Push(key TKey, data TData) error
 ```
 
 Push a message to the specified key's queue. Messages with the same key are guaranteed to be processed in order.
 
 **Errors:**
-- `ErrWasExited` - ParallelOrder has been stopped
+- `ErrWasExited` - Parq has been stopped
 - `ErrPutFail` - Message queue is full
 - `ErrKeyDeleted` - Key has been deleted
 
 ### Stop
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Stop()
+func (pq *Parq[TKey, TData]) Stop()
 ```
 
 Gracefully stop the processor. Waits for all pending messages to be processed.
@@ -163,7 +163,7 @@ Gracefully stop the processor. Waits for all pending messages to be processed.
 ### Remove
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Remove(key TKey) bool
+func (pq *Parq[TKey, TData]) Remove(key TKey) bool
 ```
 
 Remove a key and discard all its pending messages. Returns true if the key existed.
@@ -171,7 +171,7 @@ Remove a key and discard all its pending messages. Returns true if the key exist
 ### Has
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Has(key TKey) bool
+func (pq *Parq[TKey, TData]) Has(key TKey) bool
 ```
 
 Check if a key exists.
@@ -179,7 +179,7 @@ Check if a key exists.
 ### Keys
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Keys() []TKey
+func (pq *Parq[TKey, TData]) Keys() []TKey
 ```
 
 Get all active keys.
@@ -187,7 +187,7 @@ Get all active keys.
 ### Count
 
 ```go
-func (po *ParallelOrder[TKey, TData]) Count() int
+func (pq *Parq[TKey, TData]) Count() int
 ```
 
 Get the number of active keys.
@@ -197,7 +197,7 @@ Get the number of active keys.
 ```go
 var (
     ErrPutFail        = errors.New("put key fail maybe queue is full")
-    ErrWasExited      = errors.New("ParallelOrder was exited")
+    ErrWasExited      = errors.New("Parq was exited")
     ErrPushNotFindKey = errors.New("push not find key")
     ErrKeyDeleted     = errors.New("key has been deleted")
 )
@@ -211,7 +211,7 @@ package main
 import (
     "fmt"
     "sync"
-    "github.com/1xxz188/parallelorder/v2"
+    "github.com/1xxz188/parq"
 )
 
 type GameMessage struct {
@@ -222,18 +222,18 @@ type GameMessage struct {
 func main() {
     var wg sync.WaitGroup
 
-    handler := func(po *parallelorder.ParallelOrder[string, GameMessage], playerID string, msg GameMessage) {
+    handler := func(pq *parq.Parq[string, GameMessage], playerID string, msg GameMessage) {
         fmt.Printf("[%s] Action: %s, Data: %v\n", playerID, msg.Action, msg.Data)
         wg.Done()
     }
 
     // Create with custom options using DefaultOptionsString
-    opt := parallelorder.DefaultOptionsString(handler).
+    opt := parq.DefaultOptionsString(handler).
         WithWorkNum(64).
         WithNodeNum(5000).
         WithMsgCapacity(1024)
 
-    entity, err := parallelorder.New(opt)
+    entity, err := parq.New(opt)
     if err != nil {
         panic(err)
     }
@@ -263,25 +263,25 @@ func main() {
 }
 ```
 
-## Using ParallelOrder Pointer in Handler
+## Using Parq Pointer in Handler
 
-The handler receives a pointer to the ParallelOrder instance, enabling advanced patterns:
+The handler receives a pointer to the Parq instance, enabling advanced patterns:
 
 ```go
-handler := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
+handler := func(pq *parq.Parq[string, string], key string, data string) {
     // Push new message from within handler
     if data == "trigger" {
-        po.Push("another_key", "triggered_message")
+        pq.Push("another_key", "triggered_message")
     }
     
     // Check if another key exists
-    if po.Has("special_key") {
+    if pq.Has("special_key") {
         // do something
     }
     
     // Remove a key based on condition
     if data == "cleanup" {
-        po.Remove("old_key")
+        pq.Remove("old_key")
     }
 }
 ```

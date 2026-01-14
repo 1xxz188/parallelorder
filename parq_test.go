@@ -1,4 +1,4 @@
-package parallelorder
+package parq
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 
 func TestDemo(t *testing.T) {
 	exitChan := make(chan struct{})
-	fn := func(po *ParallelOrder[string, string], key string, data string) {
+	fn := func(pq *Parq[string, string], key string, data string) {
 		fmt.Println(key, data)
 		close(exitChan)
 	}
@@ -38,7 +38,7 @@ func TestMultiPushMsg(t *testing.T) {
 	shouldRevCnt := int32(msgCnt * sendGoCnt)
 	overChan := make(chan struct{})
 
-	fn := func(po *ParallelOrder[string, int], key string, data int) {
+	fn := func(pq *Parq[string, int], key string, data int) {
 		oldVV, ok := testMap.Get(key)
 		if !ok {
 			panic("not find key")
@@ -99,7 +99,7 @@ func TestMultiPushMsg(t *testing.T) {
 
 func TestStop(t *testing.T) {
 	var cnt int
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		cnt++
 	}
 	entity, err := New[string, int](DefaultOptionsString(handle))
@@ -120,7 +120,7 @@ func TestStop(t *testing.T) {
 // TestRemove 测试删除 key 功能
 func TestRemove(t *testing.T) {
 	var processedCount int32
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
 		time.Sleep(time.Millisecond * 10) // 模拟处理耗时
 	}
@@ -161,7 +161,7 @@ func TestRemove(t *testing.T) {
 
 // TestHas 测试检查 key 是否存在
 func TestHas(t *testing.T) {
-	handle := func(po *ParallelOrder[string, int], key string, data int) {}
+	handle := func(pq *Parq[string, int], key string, data int) {}
 
 	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
@@ -183,7 +183,7 @@ func TestHas(t *testing.T) {
 
 // TestKeys 测试获取所有 key
 func TestKeys(t *testing.T) {
-	handle := func(po *ParallelOrder[string, int], key string, data int) {}
+	handle := func(pq *Parq[string, int], key string, data int) {}
 
 	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
@@ -213,7 +213,7 @@ func TestKeys(t *testing.T) {
 
 // TestCount 测试获取 key 数量
 func TestCount(t *testing.T) {
-	handle := func(po *ParallelOrder[string, int], key string, data int) {}
+	handle := func(pq *Parq[string, int], key string, data int) {}
 
 	entity, err := New[string, int](DefaultOptionsString(handle))
 	require.NoError(t, err)
@@ -236,7 +236,7 @@ func TestCount(t *testing.T) {
 // TestConcurrentRemove 测试并发删除
 func TestConcurrentRemove(t *testing.T) {
 	var processedCount int32
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
 	}
 
@@ -271,7 +271,7 @@ func TestRemoveAndPush(t *testing.T) {
 	var messages []string
 	var mu sync.Mutex
 
-	handle := func(po *ParallelOrder[string, string], key string, data string) {
+	handle := func(pq *Parq[string, string], key string, data string) {
 		mu.Lock()
 		messages = append(messages, data)
 		mu.Unlock()
@@ -304,7 +304,7 @@ func TestRemoveAndPush(t *testing.T) {
 
 // TestOptions 测试配置选项
 func TestOptions(t *testing.T) {
-	handle := func(po *ParallelOrder[string, int], key string, data int) {}
+	handle := func(pq *Parq[string, int], key string, data int) {}
 
 	// 测试默认配置
 	opt := DefaultOptionsString(handle)
@@ -326,7 +326,7 @@ func TestOptions(t *testing.T) {
 
 // TestInvalidOptions 测试无效配置
 func TestInvalidOptions(t *testing.T) {
-	handle := func(po *ParallelOrder[string, int], key string, data int) {}
+	handle := func(pq *Parq[string, int], key string, data int) {}
 
 	// nodeNum <= 0
 	opt := DefaultOptionsString(handle).WithNodeNum(0)
@@ -353,7 +353,7 @@ func TestInvalidOptions(t *testing.T) {
 func TestQueueFull(t *testing.T) {
 	// 使用一个阻塞的 handler
 	blockChan := make(chan struct{})
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		<-blockChan // 阻塞直到关闭
 	}
 
@@ -381,7 +381,7 @@ func TestQueueFull(t *testing.T) {
 // TestConcurrentStop 测试并发调用 Stop
 func TestConcurrentStop(t *testing.T) {
 	var cnt int32
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&cnt, 1)
 	}
 
@@ -411,7 +411,7 @@ func TestConcurrentStop(t *testing.T) {
 // TestPushAfterRemove 测试删除后立即 Push 的并发情况
 func TestPushAfterRemove(t *testing.T) {
 	var processedCount int32
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
 	}
 
@@ -446,7 +446,7 @@ func TestOrderGuarantee(t *testing.T) {
 	var results []int
 	var mu sync.Mutex
 
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		mu.Lock()
 		results = append(results, data)
 		mu.Unlock()
@@ -476,7 +476,7 @@ func TestOrderGuarantee(t *testing.T) {
 func TestIntKey(t *testing.T) {
 	var results sync.Map
 
-	handle := func(po *ParallelOrder[int, string], key int, data string) {
+	handle := func(pq *Parq[int, string], key int, data string) {
 		results.Store(key, data)
 	}
 
@@ -516,7 +516,7 @@ func TestCustomKeyType(t *testing.T) {
 
 	var results sync.Map
 
-	handle := func(po *ParallelOrder[UserID, string], key UserID, data string) {
+	handle := func(pq *Parq[UserID, string], key UserID, data string) {
 		results.Store(key, data)
 	}
 
@@ -567,31 +567,31 @@ func TestCustomKeyType(t *testing.T) {
 	entity2.Stop()
 }
 
-// TestHandleWithPointer 测试 Handle 函数第一个参数 *ParallelOrder 指针的使用
+// TestHandleWithPointer 测试 Handle 函数第一个参数 *Parq 指针的使用
 func TestHandleWithPointer(t *testing.T) {
 	var results sync.Map
 	var pointerValid atomic.Bool
 
-	var entityRef *ParallelOrder[string, int]
+	var entityRef *Parq[string, int]
 
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
-		// 测试 po 指针不为 nil
-		if po == nil {
-			t.Error("po should not be nil")
+	handle := func(pq *Parq[string, int], key string, data int) {
+		// 测试 pq 指针不为 nil
+		if pq == nil {
+			t.Error("pq should not be nil")
 			return
 		}
 
-		// 测试 po 指针指向正确的实例
-		if po == entityRef {
+		// 测试 pq 指针指向正确的实例
+		if pq == entityRef {
 			pointerValid.Store(true)
 		}
 
-		// 测试在回调中使用 po 调用 Has 方法
-		exists := po.Has(key)
+		// 测试在回调中使用 pq 调用 Has 方法
+		exists := pq.Has(key)
 		results.Store(fmt.Sprintf("%s_has", key), exists)
 
-		// 测试在回调中使用 po 调用 Count 方法
-		count := po.Count()
+		// 测试在回调中使用 pq 调用 Count 方法
+		count := pq.Count()
 		results.Store(fmt.Sprintf("%s_count", key), count)
 
 		// 保存处理的数据
@@ -608,8 +608,8 @@ func TestHandleWithPointer(t *testing.T) {
 
 	entity.Stop()
 
-	// 验证 po 指针有效
-	require.True(t, pointerValid.Load(), "po pointer should point to the correct entity")
+	// 验证 pq 指针有效
+	require.True(t, pointerValid.Load(), "pq pointer should point to the correct entity")
 
 	// 验证数据正确处理
 	v, ok := results.Load("key1")
@@ -626,19 +626,19 @@ func TestHandleWithPointer(t *testing.T) {
 	require.True(t, v.(bool))
 }
 
-// TestHandlePushFromCallback 测试在回调函数中通过 po 指针 Push 新消息
+// TestHandlePushFromCallback 测试在回调函数中通过 pq 指针 Push 新消息
 func TestHandlePushFromCallback(t *testing.T) {
 	var processedKeys sync.Map
 	expectedKeys := int32(3) // key1, key2, key3
 	var processedCount int32
 	doneChan := make(chan struct{})
 
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		processedKeys.Store(key, data)
 
-		// 当处理 key1 时，通过 po 指针 Push 一个新的 key
+		// 当处理 key1 时，通过 pq 指针 Push 一个新的 key
 		if key == "key1" && data == 1 {
-			po.Push("key3", 3)
+			pq.Push("key3", 3)
 		}
 
 		if atomic.AddInt32(&processedCount, 1) >= expectedKeys {
@@ -668,16 +668,16 @@ func TestHandlePushFromCallback(t *testing.T) {
 	require.True(t, ok)
 }
 
-// TestHandleRemoveFromCallback 测试在回调函数中通过 po 指针 Remove key
+// TestHandleRemoveFromCallback 测试在回调函数中通过 pq 指针 Remove key
 func TestHandleRemoveFromCallback(t *testing.T) {
 	var processedCount int32
 
-	handle := func(po *ParallelOrder[string, int], key string, data int) {
+	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
 
 		// 当处理 key1 的第一个消息时，删除 key2
 		if key == "key1" && data == 1 {
-			po.Remove("key2")
+			pq.Remove("key2")
 		}
 	}
 

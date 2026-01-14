@@ -1,4 +1,4 @@
-module github.com/1xxz188/parallelorder/v3
+module github.com/1xxz188/parq
 
 go 1.20
 
