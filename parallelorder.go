@@ -16,7 +16,7 @@ var (
 	ErrKeyDeleted     = errors.New("key has been deleted")
 )
 
-type Handle[TKey comparable, TData any] func(key TKey, data TData)
+type Handle[TKey comparable, TData any] func(po *ParallelOrder[TKey, TData], key TKey, data TData)
 
 type Options[TKey comparable, TData any] struct {
 	nodeNum     uint32 //可并发元素数量,比如玩家数量，超出会被阻塞
@@ -150,7 +150,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*ParallelOrder[T
 					if item.deleted.Load() {
 						break
 					}
-					po.fn(item.key, msg)
+					po.fn(po, item.key, msg)
 					if quantity <= 0 {
 						break
 					}
@@ -271,7 +271,7 @@ func (po *ParallelOrder[TKey, TData]) Stop() {
 				if !ok {
 					break
 				}
-				po.fn(item.key, msg)
+				po.fn(po, item.key, msg)
 				if quantity <= 0 {
 					break
 				}

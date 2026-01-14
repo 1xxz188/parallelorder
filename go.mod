@@ -1,4 +1,4 @@
-module github.com/1xxz188/parallelorder/v2
+module github.com/1xxz188/parallelorder/v3
 
 go 1.20
 
