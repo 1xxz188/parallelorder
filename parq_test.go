@@ -671,13 +671,29 @@ func TestHandlePushFromCallback(t *testing.T) {
 // TestHandleRemoveFromCallback 测试在回调函数中通过 pq 指针 Remove key
 func TestHandleRemoveFromCallback(t *testing.T) {
 	var processedCount int32
+	var key1Processed, key2Processed int32
 
 	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
 
+		if key == "key1" {
+			atomic.AddInt32(&key1Processed, 1)
+		} else if key == "key2" {
+			atomic.AddInt32(&key2Processed, 1)
+		}
+
 		// 当处理 key1 的第一个消息时，删除 key2
 		if key == "key1" && data == 1 {
-			pq.Remove("key2")
+			t.Logf("Removing key2 from callback")
+			// 在删除前检查 key2 的待处理消息数量
+			pendingBefore := pq.PendingCount("key2")
+			t.Logf("key2 pending messages before remove: %d", pendingBefore)
+
+			removed := pq.Remove("key2")
+			require.True(t, removed, "key2 should be removed successfully")
+
+			// 删除后 key2 应该不存在
+			require.False(t, pq.Has("key2"), "key2 should not exist after removal")
 		}
 	}
 
@@ -690,8 +706,85 @@ func TestHandleRemoveFromCallback(t *testing.T) {
 	entity.Push("key2", 2)
 	entity.Push("key2", 3)
 
+	// 给一些时间让消息处理
+	time.Sleep(100 * time.Millisecond)
+
+	// 检查所有待处理消息
+	pendingCounts := entity.PendingCounts()
+	t.Logf("Pending counts: %v", pendingCounts)
+
 	entity.Stop()
 
+	// key1 应该被处理
+	require.Equal(t, int32(1), key1Processed, "key1 should be processed once")
+
 	// key2 可能部分被处理或完全被跳过（取决于时序）
+	// 但是由于 workNum=1 且 key1 先被处理，key2 的消息应该在被删除前不会被处理
 	t.Logf("Total processed count: %d", processedCount)
+	t.Logf("key1 processed: %d, key2 processed: %d", key1Processed, key2Processed)
+
+	// 验证 key2 被删除后不再存在
+	require.False(t, entity.Has("key2"), "key2 should not exist after removal")
+}
+
+// TestPendingCount 测试 PendingCount 和 PendingCounts 函数
+func TestPendingCount(t *testing.T) {
+	processed := make(chan struct{})
+	handle := func(pq *Parq[string, int], key string, data int) {
+		// 阻塞处理，让消息堆积
+		<-processed
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1))
+	require.NoError(t, err)
+
+	// Push 多个 key 的消息
+	entity.Push("key1", 1)
+	entity.Push("key1", 2)
+	entity.Push("key1", 3)
+	entity.Push("key2", 1)
+	entity.Push("key2", 2)
+	entity.Push("key3", 1)
+
+	// 给一些时间让第一条消息开始处理（被阻塞）
+	time.Sleep(50 * time.Millisecond)
+
+	// 检查单个 key 的待处理数量
+	count1 := entity.PendingCount("key1")
+	count2 := entity.PendingCount("key2")
+	count3 := entity.PendingCount("key3")
+	countNonExist := entity.PendingCount("nonexist")
+
+	t.Logf("key1 pending: %d, key2 pending: %d, key3 pending: %d", count1, count2, count3)
+
+	// key1 有一条消息正在处理（阻塞中），应该还有 2 条待处理
+	require.GreaterOrEqual(t, count1, uint32(2), "key1 should have at least 2 pending messages")
+	require.Equal(t, uint32(2), count2, "key2 should have 2 pending messages")
+	require.Equal(t, uint32(1), count3, "key3 should have 1 pending message")
+	require.Equal(t, uint32(0), countNonExist, "non-existent key should have 0 pending messages")
+
+	// 检查所有 key 的待处理数量
+	pendingCounts := entity.PendingCounts()
+	t.Logf("All pending counts: %v", pendingCounts)
+
+	// pendingCounts 应该包含所有有消息的 key
+	require.GreaterOrEqual(t, pendingCounts["key1"], uint32(2))
+	require.Equal(t, uint32(2), pendingCounts["key2"])
+	require.Equal(t, uint32(1), pendingCounts["key3"])
+
+	// 解除阻塞，让所有消息处理完
+	close(processed)
+	entity.Stop()
+
+	// 处理完后，所有 key 的待处理数量应该为 0
+	count1After := entity.PendingCount("key1")
+	count2After := entity.PendingCount("key2")
+	count3After := entity.PendingCount("key3")
+	require.Equal(t, uint32(0), count1After, "key1 should have 0 pending messages after processing")
+	require.Equal(t, uint32(0), count2After, "key2 should have 0 pending messages after processing")
+	require.Equal(t, uint32(0), count3After, "key3 should have 0 pending messages after processing")
+
+	// PendingCounts 应该为空或不包含任何 key
+	pendingCountsAfter := entity.PendingCounts()
+	require.Empty(t, pendingCountsAfter, "PendingCounts should be empty after all messages are processed")
 }

@@ -338,3 +338,32 @@ func (pq *Parq[TKey, TData]) Keys() []TKey {
 func (pq *Parq[TKey, TData]) Count() int {
 	return pq.nodeMap.Count()
 }
+
+// PendingCounts 返回所有 key 的消息队列剩余数量
+// 返回一个 map，key 是 TKey，value 是该 key 的消息队列中剩余的消息数量
+func (pq *Parq[TKey, TData]) PendingCounts() map[TKey]uint32 {
+	result := make(map[TKey]uint32)
+	for _, key := range pq.nodeMap.Keys() {
+		if item, ok := pq.nodeMap.Get(key); ok && !item.deleted.Load() {
+			item.rwLock.RLock()
+			quantity := item.msgQueue.Quantity()
+			item.rwLock.RUnlock()
+			if quantity > 0 {
+				result[key] = quantity
+			}
+		}
+	}
+	return result
+}
+
+// PendingCount 返回指定 key 的消息队列剩余数量
+// 如果 key 不存在或已被删除，返回 0
+func (pq *Parq[TKey, TData]) PendingCount(key TKey) uint32 {
+	item, ok := pq.nodeMap.Get(key)
+	if !ok || item.deleted.Load() {
+		return 0
+	}
+	item.rwLock.RLock()
+	defer item.rwLock.RUnlock()
+	return item.msgQueue.Quantity()
+}
