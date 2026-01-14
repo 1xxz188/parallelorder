@@ -345,10 +345,7 @@ func (pq *Parq[TKey, TData]) PendingCounts() map[TKey]uint32 {
 	result := make(map[TKey]uint32)
 	for _, key := range pq.nodeMap.Keys() {
 		if item, ok := pq.nodeMap.Get(key); ok && !item.deleted.Load() {
-			item.rwLock.RLock()
-			quantity := item.msgQueue.Quantity()
-			item.rwLock.RUnlock()
-			if quantity > 0 {
+			if quantity := item.msgQueue.Quantity(); quantity > 0 {
 				result[key] = quantity
 			}
 		}
@@ -363,7 +360,5 @@ func (pq *Parq[TKey, TData]) PendingCount(key TKey) uint32 {
 	if !ok || item.deleted.Load() {
 		return 0
 	}
-	item.rwLock.RLock()
-	defer item.rwLock.RUnlock()
 	return item.msgQueue.Quantity()
 }
