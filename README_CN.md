@@ -30,8 +30,8 @@ import (
 )
 
 func main() {
-    // 定义处理函数
-    fn := func(key string, data string) {
+    // 定义处理函数（第一个参数是 ParallelOrder 指针）
+    fn := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
         fmt.Println(key, data)
     }
 
@@ -62,8 +62,8 @@ import (
 )
 
 func main() {
-    // 使用 int64 作为 key 的处理函数
-    fn := func(userID int64, data string) {
+    // 使用 int64 作为 key 的处理函数（第一个参数是 ParallelOrder 指针）
+    fn := func(po *parallelorder.ParallelOrder[int64, string], userID int64, data string) {
         fmt.Printf("User %d: %s\n", userID, data)
     }
 
@@ -114,6 +114,14 @@ entity, err := parallelorder.New(opt)
 | `oneCallCnt` | 10 | 每次处理多少消息后切换到其他 key |
 
 ## API 参考
+
+### Handle
+
+```go
+type Handle[TKey comparable, TData any] func(po *ParallelOrder[TKey, TData], key TKey, data TData)
+```
+
+处理函数类型。第一个参数 `po` 是 ParallelOrder 实例指针，允许你在处理函数中调用 `Push`、`Remove`、`Has` 等方法。
 
 ### New
 
@@ -214,7 +222,7 @@ type GameMessage struct {
 func main() {
     var wg sync.WaitGroup
 
-    handler := func(playerID string, msg GameMessage) {
+    handler := func(po *parallelorder.ParallelOrder[string, GameMessage], playerID string, msg GameMessage) {
         fmt.Printf("[%s] Action: %s, Data: %v\n", playerID, msg.Action, msg.Data)
         wg.Done()
     }
@@ -252,6 +260,29 @@ func main() {
     fmt.Println("Has player1:", entity.Has("player1"))
 
     entity.Stop()
+}
+```
+
+## 在处理函数中使用 ParallelOrder 指针
+
+处理函数接收 ParallelOrder 实例指针，支持高级用法：
+
+```go
+handler := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
+    // 在处理函数中推送新消息
+    if data == "trigger" {
+        po.Push("another_key", "triggered_message")
+    }
+    
+    // 检查另一个 key 是否存在
+    if po.Has("special_key") {
+        // 执行某些操作
+    }
+    
+    // 根据条件删除 key
+    if data == "cleanup" {
+        po.Remove("old_key")
+    }
 }
 ```
 

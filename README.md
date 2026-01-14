@@ -30,8 +30,8 @@ import (
 )
 
 func main() {
-    // Define handler function
-    fn := func(key string, data string) {
+    // Define handler function (first parameter is the ParallelOrder pointer)
+    fn := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
         fmt.Println(key, data)
     }
 
@@ -62,8 +62,8 @@ import (
 )
 
 func main() {
-    // Handler with int64 key
-    fn := func(userID int64, data string) {
+    // Handler with int64 key (first parameter is the ParallelOrder pointer)
+    fn := func(po *parallelorder.ParallelOrder[int64, string], userID int64, data string) {
         fmt.Printf("User %d: %s\n", userID, data)
     }
 
@@ -114,6 +114,14 @@ entity, err := parallelorder.New(opt)
 | `oneCallCnt` | 10 | Messages to process before yielding to other keys |
 
 ## API Reference
+
+### Handle
+
+```go
+type Handle[TKey comparable, TData any] func(po *ParallelOrder[TKey, TData], key TKey, data TData)
+```
+
+The handler function type. The first parameter `po` is the ParallelOrder instance pointer, allowing you to call methods like `Push`, `Remove`, `Has` within the handler.
 
 ### New
 
@@ -214,7 +222,7 @@ type GameMessage struct {
 func main() {
     var wg sync.WaitGroup
 
-    handler := func(playerID string, msg GameMessage) {
+    handler := func(po *parallelorder.ParallelOrder[string, GameMessage], playerID string, msg GameMessage) {
         fmt.Printf("[%s] Action: %s, Data: %v\n", playerID, msg.Action, msg.Data)
         wg.Done()
     }
@@ -252,6 +260,29 @@ func main() {
     fmt.Println("Has player1:", entity.Has("player1"))
 
     entity.Stop()
+}
+```
+
+## Using ParallelOrder Pointer in Handler
+
+The handler receives a pointer to the ParallelOrder instance, enabling advanced patterns:
+
+```go
+handler := func(po *parallelorder.ParallelOrder[string, string], key string, data string) {
+    // Push new message from within handler
+    if data == "trigger" {
+        po.Push("another_key", "triggered_message")
+    }
+    
+    // Check if another key exists
+    if po.Has("special_key") {
+        // do something
+    }
+    
+    // Remove a key based on condition
+    if data == "cleanup" {
+        po.Remove("old_key")
+    }
 }
 ```
 
