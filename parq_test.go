@@ -626,19 +626,20 @@ func TestHandleWithPointer(t *testing.T) {
 	require.True(t, v.(bool))
 }
 
-// TestHandlePushFromCallback 测试在回调函数中通过 pq 指针 Push 新消息
+// TestHandlePushFromCallback 测试在回调函数中通过 pq 指针 Push 其他 key（应该成功）
 func TestHandlePushFromCallback(t *testing.T) {
 	var processedKeys sync.Map
-	expectedKeys := int32(3) // key1, key2, key3
+	expectedKeys := int32(3) // key1, key2, key3 (Push 到其他 key 是允许的)
 	var processedCount int32
+	var pushErr error
 	doneChan := make(chan struct{})
 
 	handle := func(pq *Parq[string, int], key string, data int) {
 		processedKeys.Store(key, data)
 
-		// 当处理 key1 时，通过 pq 指针 Push 一个新的 key
+		// 当处理 key1 时，尝试通过 pq 指针 Push 一个新的 key（应该成功，因为是不同的 key）
 		if key == "key1" && data == 1 {
-			pq.Push("key3", 3)
+			pushErr = pq.Push("key3", 3)
 		}
 
 		if atomic.AddInt32(&processedCount, 1) >= expectedKeys {
@@ -656,12 +657,15 @@ func TestHandlePushFromCallback(t *testing.T) {
 	<-doneChan
 	entity.Stop()
 
+	// 验证在 handle 中 Push 到其他 key 成功
+	require.NoError(t, pushErr, "Push to different key inside handle should succeed")
+
 	// 验证 key3 被正确处理（由回调中 Push 产生）
 	v, ok := processedKeys.Load("key3")
 	require.True(t, ok, "key3 should be processed")
 	require.Equal(t, 3, v)
 
-	// 验证所有 key 都被处理
+	// 验证 key1 和 key2 被处理
 	_, ok = processedKeys.Load("key1")
 	require.True(t, ok)
 	_, ok = processedKeys.Load("key2")
@@ -672,6 +676,7 @@ func TestHandlePushFromCallback(t *testing.T) {
 func TestHandleRemoveFromCallback(t *testing.T) {
 	var processedCount int32
 	var key1Processed, key2Processed int32
+	key1Started := make(chan struct{}) // 用于同步，确保 key1 先开始处理
 
 	handle := func(pq *Parq[string, int], key string, data int) {
 		atomic.AddInt32(&processedCount, 1)
@@ -684,6 +689,12 @@ func TestHandleRemoveFromCallback(t *testing.T) {
 
 		// 当处理 key1 的第一个消息时，删除 key2
 		if key == "key1" && data == 1 {
+			// 通知主线程：key1 开始处理了，可以 Push key2 了
+			close(key1Started)
+
+			// 等待一下让 key2 的 Push 完成
+			time.Sleep(10 * time.Millisecond)
+
 			t.Logf("Removing key2 from callback")
 			// 在删除前检查 key2 的待处理消息数量
 			pendingBefore := pq.PendingCount("key2")
@@ -700,8 +711,13 @@ func TestHandleRemoveFromCallback(t *testing.T) {
 	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1))
 	require.NoError(t, err)
 
-	// 先 Push key1，然后 Push key2 的多个消息
+	// 先 Push key1
 	entity.Push("key1", 1)
+
+	// 等待 key1 开始被处理后，再 Push key2（确保处理顺序）
+	<-key1Started
+
+	// 现在 Push key2 的多个消息
 	entity.Push("key2", 1)
 	entity.Push("key2", 2)
 	entity.Push("key2", 3)
@@ -718,10 +734,10 @@ func TestHandleRemoveFromCallback(t *testing.T) {
 	// key1 应该被处理
 	require.Equal(t, int32(1), key1Processed, "key1 should be processed once")
 
-	// key2 可能部分被处理或完全被跳过（取决于时序）
-	// 但是由于 workNum=1 且 key1 先被处理，key2 的消息应该在被删除前不会被处理
+	// key2 应该不被处理（因为在 Push 后立即被 Remove 了）
 	t.Logf("Total processed count: %d", processedCount)
 	t.Logf("key1 processed: %d, key2 processed: %d", key1Processed, key2Processed)
+	require.Equal(t, int32(0), key2Processed, "key2 should not be processed since it was removed")
 
 	// 验证 key2 被删除后不再存在
 	require.False(t, entity.Has("key2"), "key2 should not exist after removal")
@@ -787,4 +803,36 @@ func TestPendingCount(t *testing.T) {
 	// PendingCounts 应该为空或不包含任何 key
 	pendingCountsAfter := entity.PendingCounts()
 	require.Empty(t, pendingCountsAfter, "PendingCounts should be empty after all messages are processed")
+}
+
+func TestInFnMultiPushMsg(t *testing.T) {
+	var pushErr1, pushErr2 error
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		t.Logf("call key[%s] [%d]", key, data)
+
+		// 在 handle 中向同一个 key Push 应该被框架拒绝（防止死锁）
+		t.Logf("push 2 to same key")
+		pushErr1 = pq.Push("key1", 2)
+		t.Logf("push 2 result: %v", pushErr1)
+
+		t.Logf("push 3 to same key")
+		pushErr2 = pq.Push("key1", 3)
+		t.Logf("push 3 result: %v", pushErr2)
+
+		t.Logf("end")
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(1))
+	require.NoError(t, err)
+	entity.Push("key1", 1)
+
+	time.Sleep(100 * time.Millisecond)
+	t.Log("before stop")
+	entity.Stop()
+	t.Log("end stop")
+
+	// 验证在 handle 中向同一个 key Push 被正确拒绝
+	require.ErrorIs(t, pushErr1, ErrPushSelfInHandle, "Push to self key inside handle should return ErrPushSelfInHandle")
+	require.ErrorIs(t, pushErr2, ErrPushSelfInHandle, "Push to self key inside handle should return ErrPushSelfInHandle")
 }

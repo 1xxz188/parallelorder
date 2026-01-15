@@ -7,14 +7,21 @@ import (
 
 	"github.com/1xxz188/go-queue"
 	cmap "github.com/orcaman/concurrent-map/v2"
+	"github.com/petermattis/goid"
 )
 
 var (
-	ErrPutFail        = errors.New("put key fail maybe queue is full")
-	ErrWasExited      = errors.New("Parq was exited")
-	ErrPushNotFindKey = errors.New("push not find key")
-	ErrKeyDeleted     = errors.New("key has been deleted")
+	ErrPutFail          = errors.New("put key fail maybe queue is full")
+	ErrWasExited        = errors.New("Parq was exited")
+	ErrPushNotFindKey   = errors.New("push not find key")
+	ErrKeyDeleted       = errors.New("key has been deleted")
+	ErrPushSelfInHandle = errors.New("push to self key is not allowed inside handle callback")
 )
+
+// getGoroutineID 获取当前 goroutine 的 ID（使用高性能 goid 库）
+func getGoroutineID() int64 {
+	return goid.Get()
+}
 
 type Handle[TKey comparable, TData any] func(pq *Parq[TKey, TData], key TKey, data TData)
 
@@ -80,8 +87,9 @@ type node[TKey comparable, TData any] struct {
 
 	rwLock        sync.RWMutex
 	isInReadyChan bool
-	exit          bool        //退出包
-	deleted       atomic.Bool //已删除标记，使用原子操作避免数据竞争
+	exit          bool         //退出包
+	deleted       atomic.Bool  //已删除标记，使用原子操作避免数据竞争
+	processingGID atomic.Int64 //正在处理此 node 的 goroutine ID，0 表示未被处理
 	msgQueue      *queue.EsQueue[TData]
 }
 
@@ -129,6 +137,7 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*Parq[TKey, TDat
 		go func() {
 			defer pq.workGp.Done()
 
+			gid := getGoroutineID()
 			for item := range pq.readyChan {
 				if item.exit {
 					break
@@ -141,6 +150,9 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*Parq[TKey, TDat
 				var quantity uint32
 				var ok bool
 				var msg TData
+
+				// 标记当前 item 正在被哪个 goroutine 处理
+				item.processingGID.Store(gid)
 				for i := uint32(0); i < pq.oneCallCnt; i++ {
 					msg, ok, quantity = item.msgQueue.Get()
 					if !ok {
@@ -155,7 +167,8 @@ func New[TKey comparable, TData any](opt Options[TKey, TData]) (*Parq[TKey, TDat
 						break
 					}
 				}
-				if quantity <= 0 { //maybe still have value
+				item.processingGID.Store(0) // 清除标记
+				if quantity <= 0 {          //maybe still have value
 					item.rwLock.Lock()
 					// 已删除的节点不再放回 readyChan
 					if item.deleted.Load() {
@@ -216,6 +229,12 @@ func (pq *Parq[TKey, TData]) Push(key TKey, data TData) error {
 		}
 	}
 
+	// 检查是否在 handle 回调中向同一个 key Push（禁止此操作以避免死锁）
+	gid := getGoroutineID()
+	if item.processingGID.Load() == gid {
+		return ErrPushSelfInHandle
+	}
+
 	item.rwLock.Lock()
 	defer item.rwLock.Unlock()
 
@@ -254,18 +273,21 @@ func (pq *Parq[TKey, TData]) Stop() {
 	pq.workGp.Wait()
 
 	// 最后排空处理
+	gid := getGoroutineID()
 	for {
 		select {
 		case item, ok := <-pq.readyChan:
 			if !ok {
-				goto END // 修复: 使用 goto 跳出循环
+				return
 			}
-			// 修复: 跳过 exit 节点，避免 nil pointer panic
+			// 跳过 exit 节点，避免 nil pointer panic
 			if item.exit {
 				continue
 			}
 			var quantity uint32
 			var msg TData
+			// 标记当前 item 正在被处理
+			item.processingGID.Store(gid)
 			for {
 				msg, ok, quantity = item.msgQueue.Get()
 				if !ok {
@@ -276,11 +298,11 @@ func (pq *Parq[TKey, TData]) Stop() {
 					break
 				}
 			}
+			item.processingGID.Store(0)
 		default:
-			goto END
+			return
 		}
 	}
-END:
 }
 
 // Remove 删除指定 key，会丢弃该 key 所有未处理的消息
