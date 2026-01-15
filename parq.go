@@ -16,6 +16,7 @@ var (
 	ErrPushNotFindKey   = errors.New("push not find key")
 	ErrKeyDeleted       = errors.New("key has been deleted")
 	ErrPushSelfInHandle = errors.New("push to self key is not allowed inside handle callback")
+	ErrQueueFull        = errors.New("message queue is full")
 )
 
 // getGoroutineID 获取当前 goroutine 的 ID（使用高性能 goid 库）
@@ -253,6 +254,81 @@ func (pq *Parq[TKey, TData]) Push(key TKey, data TData) error {
 	item.isInReadyChan = true
 	pq.readyChan <- item
 	return nil
+}
+
+// TryPush 非阻塞版本的 Push，适合在 handle 回调中使用
+// 允许向任意 key（包括自身）Push，但如果队列满则返回 ErrQueueFull
+// 这可以避免在 handle 中因队列满而导致死锁
+func (pq *Parq[TKey, TData]) TryPush(key TKey, data TData) error {
+	if pq.exit.Load() {
+		return ErrWasExited
+	}
+
+	pq.pushWg.Add(1)
+	defer pq.pushWg.Done()
+
+	if pq.exit.Load() {
+		return ErrWasExited
+	}
+
+	var item *node[TKey, TData]
+	item, ok := pq.nodeMap.Get(key)
+	if !ok || item.deleted.Load() {
+		newItem := &node[TKey, TData]{
+			key:      key,
+			msgQueue: queue.NewQueue[TData](pq.msgCapacity),
+		}
+		if ok := pq.nodeMap.SetIfAbsent(key, newItem); ok {
+			item = newItem
+		} else {
+			item, ok = pq.nodeMap.Get(key)
+			if !ok {
+				return ErrPushNotFindKey
+			}
+			if item.deleted.Load() {
+				return ErrKeyDeleted
+			}
+		}
+	}
+
+	item.rwLock.Lock()
+	defer item.rwLock.Unlock()
+
+	if item.deleted.Load() {
+		return ErrKeyDeleted
+	}
+
+	// 检查 msgQueue 是否有空间
+	if item.msgQueue.Quantity() >= pq.msgCapacity {
+		return ErrQueueFull
+	}
+
+	// 如果 item 已经在 readyChan 里，直接 Put 消息即可
+	if item.isInReadyChan {
+		ok, _ = item.msgQueue.Put(data)
+		if !ok {
+			return ErrQueueFull
+		}
+		return nil
+	}
+
+	// item 不在 readyChan 里，需要先确保 readyChan 有空间
+	// 在 Put 之前检查，避免消息放入但无法被处理的问题
+	select {
+	case pq.readyChan <- item:
+		// 成功放入 readyChan，现在安全地 Put 消息
+		item.isInReadyChan = true
+		ok, _ = item.msgQueue.Put(data)
+		if !ok {
+			// Put 失败（极少情况），但 item 已在 readyChan 里
+			// worker 会处理并发现队列空，然后设置 isInReadyChan = false
+			return ErrQueueFull
+		}
+		return nil
+	default:
+		// readyChan 满了，直接返回错误（不 Put 消息）
+		return ErrQueueFull
+	}
 }
 
 func (pq *Parq[TKey, TData]) Stop() {

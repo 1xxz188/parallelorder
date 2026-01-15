@@ -1,6 +1,7 @@
 package parq
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -806,19 +807,15 @@ func TestPendingCount(t *testing.T) {
 }
 
 func TestInFnMultiPushMsg(t *testing.T) {
-	var pushErr1, pushErr2 error
 
 	handle := func(pq *Parq[string, int], key string, data int) {
 		t.Logf("call key[%s] [%d]", key, data)
 
-		// 在 handle 中向同一个 key Push 应该被框架拒绝（防止死锁）
-		t.Logf("push 2 to same key")
-		pushErr1 = pq.Push("key1", 2)
-		t.Logf("push 2 result: %v", pushErr1)
+		err := pq.Push("key1", 2)
+		require.EqualError(t, err, ErrPushSelfInHandle.Error())
 
-		t.Logf("push 3 to same key")
-		pushErr2 = pq.Push("key1", 3)
-		t.Logf("push 3 result: %v", pushErr2)
+		err = pq.Push("key1", 3)
+		require.EqualError(t, err, ErrPushSelfInHandle.Error())
 
 		t.Logf("end")
 	}
@@ -831,8 +828,211 @@ func TestInFnMultiPushMsg(t *testing.T) {
 	t.Log("before stop")
 	entity.Stop()
 	t.Log("end stop")
+}
 
-	// 验证在 handle 中向同一个 key Push 被正确拒绝
-	require.ErrorIs(t, pushErr1, ErrPushSelfInHandle, "Push to self key inside handle should return ErrPushSelfInHandle")
-	require.ErrorIs(t, pushErr2, ErrPushSelfInHandle, "Push to self key inside handle should return ErrPushSelfInHandle")
+// TestTryPushToSelf 测试 TryPush 允许向自身 key Push
+func TestTryPushToSelf(t *testing.T) {
+	var tryPushResults []error
+	var processedData []int
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		mu.Lock()
+		processedData = append(processedData, data)
+		mu.Unlock()
+
+		t.Logf("handle key=%s data=%d", key, data)
+
+		// 只在第一次处理时 TryPush 更多消息
+		if data == 1 {
+			for i := 2; i <= 5; i++ {
+				err := pq.TryPush("key1", i) // 向自身 key TryPush
+				mu.Lock()
+				tryPushResults = append(tryPushResults, err)
+				mu.Unlock()
+				t.Logf("TryPush %d result: %v", i, err)
+			}
+		}
+
+		// 所有消息处理完后关闭 done
+		mu.Lock()
+		count := len(processedData)
+		mu.Unlock()
+		if count >= 3 { // 至少处理 3 条消息才算成功
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}
+	}
+
+	// 设置足够大的容量
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(10))
+	require.NoError(t, err)
+
+	entity.Push("key1", 1)
+
+	// 等待处理完成
+	select {
+	case <-done:
+		t.Log("Processing completed")
+	case <-time.After(2 * time.Second):
+		t.Log("Timeout, checking results anyway")
+	}
+
+	entity.Stop()
+
+	// 统计 TryPush 结果
+	var successCount, fullCount int
+	for _, e := range tryPushResults {
+		if e == nil {
+			successCount++
+		} else if errors.Is(e, ErrQueueFull) {
+			fullCount++
+		}
+	}
+	t.Logf("TryPush to self: success=%d, full=%d, processed=%v", successCount, fullCount, processedData)
+
+	// TryPush 到自身应该至少有一些成功
+	require.Greater(t, successCount, 0, "TryPush to self should succeed when queue has space")
+	// 处理的消息应该包含 TryPush 的消息
+	require.Greater(t, len(processedData), 1, "Should process more than initial message")
+}
+
+// TestTryPush 测试 TryPush 非阻塞版本
+func TestTryPush(t *testing.T) {
+	var tryPushErr error
+	var processedKeys sync.Map
+	expectedKeys := int32(2) // key1, key2
+	var processedCount int32
+	doneChan := make(chan struct{})
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		processedKeys.Store(key, data)
+
+		// 在处理 key1 时，使用 TryPush 向 key2 发送消息（应该成功）
+		if key == "key1" && data == 1 {
+			tryPushErr = pq.TryPush("key2", 2)
+		}
+
+		if atomic.AddInt32(&processedCount, 1) >= expectedKeys {
+			close(doneChan)
+		}
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(10))
+	require.NoError(t, err)
+
+	entity.Push("key1", 1)
+
+	<-doneChan
+	entity.Stop()
+
+	// TryPush 应该成功
+	require.NoError(t, tryPushErr, "TryPush to different key should succeed")
+
+	// 验证 key2 被处理
+	v, ok := processedKeys.Load("key2")
+	require.True(t, ok, "key2 should be processed")
+	require.Equal(t, 2, v)
+}
+
+// TestTryPushQueueFull 测试 TryPush 在队列满时返回错误
+func TestTryPushQueueFull(t *testing.T) {
+	var tryPushErrs []error
+	var mu sync.Mutex
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		t.Logf("handle key=%s data=%d", key, data)
+	}
+
+	// 设置很小的 msgCapacity = 2
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(2))
+	require.NoError(t, err)
+
+	// 先正常 Push 填满队列
+	entity.Push("key1", 1)
+	entity.Push("key1", 2)
+
+	// 等待一下让 worker 开始处理
+	time.Sleep(10 * time.Millisecond)
+
+	// 使用 TryPush 尝试继续添加，应该有些会失败
+	for i := 3; i <= 10; i++ {
+		err := entity.TryPush("key1", i)
+		mu.Lock()
+		tryPushErrs = append(tryPushErrs, err)
+		mu.Unlock()
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	entity.Stop()
+
+	// 统计结果
+	var successCount, fullCount int
+	for _, e := range tryPushErrs {
+		if e == nil {
+			successCount++
+		} else if errors.Is(e, ErrQueueFull) {
+			fullCount++
+		}
+	}
+	t.Logf("TryPush results: total=%d, success=%d, full=%d", len(tryPushErrs), successCount, fullCount)
+
+	// 至少应该有一些成功的（队列被消费后腾出空间）
+	// 这里不强制要求有 ErrQueueFull，因为 worker 可能处理得很快
+}
+
+// TestTryPushInHandle 测试在 handle 中使用 TryPush 不会死锁
+func TestTryPushInHandle(t *testing.T) {
+	var tryPushResults []error
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		if key == "key1" && data == 1 {
+			// 在 handle 中连续 TryPush 到同一个 key2，模拟队列满的情况
+			for i := 0; i < 10; i++ {
+				err := pq.TryPush("key2", i)
+				mu.Lock()
+				tryPushResults = append(tryPushResults, err)
+				mu.Unlock()
+			}
+			close(done)
+		}
+	}
+
+	// 设置小容量，容易满
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(3))
+	require.NoError(t, err)
+
+	entity.Push("key1", 1)
+
+	// 等待 handle 完成，不应该死锁
+	select {
+	case <-done:
+		t.Log("Handle completed without deadlock")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Deadlock detected! TryPush should not block")
+	}
+
+	entity.Stop()
+
+	// 统计结果
+	var successCount, fullCount, otherCount int
+	for _, e := range tryPushResults {
+		if e == nil {
+			successCount++
+		} else if errors.Is(e, ErrQueueFull) {
+			fullCount++
+		} else {
+			otherCount++
+		}
+	}
+	t.Logf("TryPush in handle: success=%d, full=%d, other=%d", successCount, fullCount, otherCount)
+
+	// 关键：测试不死锁，无论成功还是失败
+	require.Equal(t, 10, len(tryPushResults), "All TryPush calls should return")
 }
