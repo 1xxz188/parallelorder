@@ -384,11 +384,8 @@ func (pq *Parq[TKey, TData]) Stop() {
 // Remove 删除指定 key，会丢弃该 key 所有未处理的消息
 // 如果 key 正在被处理，会等待当前消息处理完毕后停止
 // 删除后可以重新 Push 相同的 key，会创建新的节点
+// 注意：退出阶段也允许调用此方法，以便业务层能正常清理资源
 func (pq *Parq[TKey, TData]) Remove(key TKey) bool {
-	if pq.exit.Load() {
-		return false
-	}
-
 	item, ok := pq.nodeMap.Get(key)
 	if !ok {
 		return false
