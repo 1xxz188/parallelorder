@@ -2,6 +2,7 @@ package parq
 
 import (
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -38,7 +39,7 @@ type Options[TKey comparable, TData any] struct {
 func DefaultOptions[TKey comparable, TData any](fn Handle[TKey, TData], sharding func(key TKey) uint32) Options[TKey, TData] {
 	return Options[TKey, TData]{
 		nodeNum:     10240,
-		workNum:     128,
+		workNum:     uint32(runtime.NumCPU() - 1),
 		oneCallCnt:  10,
 		fn:          fn,
 		msgCapacity: 1024 * 8,
