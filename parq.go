@@ -256,10 +256,16 @@ func (pq *Parq[TKey, TData]) Push(key TKey, data TData) error {
 	return nil
 }
 
+// TryPushOption TryPush 的可选参数
+type TryPushOption struct {
+	OnlyIfExists bool // 如果为 true，当 key 不存在时不创建新节点，直接返回 ErrPushNotFindKey
+}
+
 // TryPush 非阻塞版本的 Push，适合在 handle 回调中使用
 // 允许向任意 key（包括自身）Push，但如果队列满则返回 ErrQueueFull
 // 这可以避免在 handle 中因队列满而导致死锁
-func (pq *Parq[TKey, TData]) TryPush(key TKey, data TData) error {
+// opts 可选参数：传入 TryPushOption{OnlyIfExists: true} 时，如果 key 不存在则不添加 data
+func (pq *Parq[TKey, TData]) TryPush(key TKey, data TData, opts ...TryPushOption) error {
 	if pq.exit.Load() {
 		return ErrWasExited
 	}
@@ -271,9 +277,19 @@ func (pq *Parq[TKey, TData]) TryPush(key TKey, data TData) error {
 		return ErrWasExited
 	}
 
+	// 解析可选参数
+	var opt TryPushOption
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
 	var item *node[TKey, TData]
 	item, ok := pq.nodeMap.Get(key)
 	if !ok || item.deleted.Load() {
+		// 如果设置了 OnlyIfExists，key 不存在时直接返回错误
+		if opt.OnlyIfExists {
+			return ErrPushNotFindKey
+		}
 		newItem := &node[TKey, TData]{
 			key:      key,
 			msgQueue: queue.NewQueue[TData](pq.msgCapacity),

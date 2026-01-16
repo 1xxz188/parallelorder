@@ -985,6 +985,140 @@ func TestTryPushQueueFull(t *testing.T) {
 	// 这里不强制要求有 ErrQueueFull，因为 worker 可能处理得很快
 }
 
+// TestTryPushOnlyIfExists 测试 TryPush 的 OnlyIfExists 选项
+func TestTryPushOnlyIfExists(t *testing.T) {
+	var processedData []int
+	var mu sync.Mutex
+	done := make(chan struct{})
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		mu.Lock()
+		processedData = append(processedData, data)
+		mu.Unlock()
+
+		// 当处理完第三个消息后，关闭 done
+		mu.Lock()
+		count := len(processedData)
+		mu.Unlock()
+		if count >= 3 {
+			select {
+			case <-done:
+			default:
+				close(done)
+			}
+		}
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(10))
+	require.NoError(t, err)
+
+	// 测试1：key 不存在时，OnlyIfExists: true 应该返回 ErrPushNotFindKey
+	err = entity.TryPush("nonexistent", 100, TryPushOption{OnlyIfExists: true})
+	require.Equal(t, ErrPushNotFindKey, err, "TryPush with OnlyIfExists should fail when key does not exist")
+
+	// 测试2：不带选项时，key 不存在会自动创建（原有行为）
+	err = entity.TryPush("key1", 1)
+	require.NoError(t, err, "TryPush without options should create key if not exists")
+
+	// 测试3：key 存在时，OnlyIfExists: true 应该成功
+	err = entity.TryPush("key1", 2, TryPushOption{OnlyIfExists: true})
+	require.NoError(t, err, "TryPush with OnlyIfExists should succeed when key exists")
+
+	// 测试4：key 存在时，不带选项也应该成功（原有行为）
+	err = entity.TryPush("key1", 3)
+	require.NoError(t, err, "TryPush without options should succeed when key exists")
+
+	// 等待消息处理完成
+	select {
+	case <-done:
+		t.Log("Processing completed")
+	case <-time.After(2 * time.Second):
+		t.Log("Timeout")
+	}
+
+	entity.Stop()
+
+	// 验证消息被正确处理
+	mu.Lock()
+	require.Contains(t, processedData, 1)
+	require.Contains(t, processedData, 2)
+	require.Contains(t, processedData, 3)
+	mu.Unlock()
+}
+
+// TestTryPushOnlyIfExistsAfterRemove 测试删除 key 后使用 OnlyIfExists 选项
+func TestTryPushOnlyIfExistsAfterRemove(t *testing.T) {
+	handle := func(pq *Parq[string, int], key string, data int) {
+		// 简单处理
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1))
+	require.NoError(t, err)
+
+	// 先创建 key
+	err = entity.TryPush("key1", 1)
+	require.NoError(t, err)
+	require.True(t, entity.Has("key1"))
+
+	// 删除 key
+	removed := entity.Remove("key1")
+	require.True(t, removed)
+	require.False(t, entity.Has("key1"))
+
+	// 删除后，使用 OnlyIfExists: true 应该失败
+	err = entity.TryPush("key1", 2, TryPushOption{OnlyIfExists: true})
+	require.Equal(t, ErrPushNotFindKey, err, "TryPush with OnlyIfExists should fail after key is removed")
+
+	// 不带 OnlyIfExists 可以重新创建
+	err = entity.TryPush("key1", 3)
+	require.NoError(t, err, "TryPush without OnlyIfExists should recreate the key")
+	require.True(t, entity.Has("key1"))
+
+	entity.Stop()
+}
+
+// TestTryPushOnlyIfExistsInHandle 测试在 handle 回调中使用 OnlyIfExists 选项
+func TestTryPushOnlyIfExistsInHandle(t *testing.T) {
+	var tryPushErr1, tryPushErr2 error
+	done := make(chan struct{})
+
+	handle := func(pq *Parq[string, int], key string, data int) {
+		if key == "key1" && data == 1 {
+			// 尝试向存在的 key2 TryPush（OnlyIfExists 应该成功）
+			tryPushErr1 = pq.TryPush("key2", 100, TryPushOption{OnlyIfExists: true})
+
+			// 尝试向不存在的 key3 TryPush（OnlyIfExists 应该失败）
+			tryPushErr2 = pq.TryPush("key3", 200, TryPushOption{OnlyIfExists: true})
+
+			close(done)
+		}
+	}
+
+	entity, err := New[string, int](DefaultOptionsString(handle).WithWorkNum(1).WithMsgCapacity(10))
+	require.NoError(t, err)
+
+	// 先创建 key2
+	entity.Push("key2", 0)
+	time.Sleep(10 * time.Millisecond) // 等待 key2 被创建
+
+	// 触发 handle
+	entity.Push("key1", 1)
+
+	// 等待 handle 完成
+	select {
+	case <-done:
+		t.Log("Handle completed")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for handle")
+	}
+
+	entity.Stop()
+
+	// 验证结果
+	require.NoError(t, tryPushErr1, "TryPush with OnlyIfExists to existing key should succeed")
+	require.Equal(t, ErrPushNotFindKey, tryPushErr2, "TryPush with OnlyIfExists to non-existing key should fail")
+}
+
 // TestTryPushInHandle 测试在 handle 中使用 TryPush 不会死锁
 func TestTryPushInHandle(t *testing.T) {
 	var tryPushResults []error
